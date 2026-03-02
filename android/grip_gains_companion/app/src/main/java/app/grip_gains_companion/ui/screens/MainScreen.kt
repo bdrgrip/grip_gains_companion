@@ -2,6 +2,7 @@ package app.grip_gains_companion.ui.screens
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -36,13 +37,14 @@ fun MainScreen(
     manualTargetWeight: Double,
     weightTolerance: Double,
     onSettingsTap: () -> Unit,
+    onHistoryTap: () -> Unit, // NEW TRIGGER
     onUnitToggle: () -> Unit
 ) {
     val connectionState by bluetoothManager.connectionState.collectAsState()
     val isConnected = connectionState == ConnectionState.Connected
     val isReconnecting = connectionState == ConnectionState.Reconnecting
     val selectedDeviceType by bluetoothManager.selectedDeviceType.collectAsState()
-    
+
     // Progressor handler state
     val state by progressorHandler.state.collectAsState()
     val currentForce by progressorHandler.currentForce.collectAsState()
@@ -53,17 +55,17 @@ fun MainScreen(
     val forceHistory by progressorHandler.forceHistory.collectAsState()
     val isOffTarget by progressorHandler.isOffTarget.collectAsState()
     val offTargetDirection by progressorHandler.offTargetDirection.collectAsState()
-    
+
     // Web view state
     val scrapedTargetWeight by webViewBridge.targetWeight.collectAsState()
-    
+
     // Effective target weight
     val effectiveTargetWeight = remember(enableTargetWeight, useManualTarget, manualTargetWeight, scrapedTargetWeight) {
         if (!enableTargetWeight) null
         else if (useManualTarget) manualTargetWeight
         else scrapedTargetWeight
     }
-    
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -91,7 +93,7 @@ fun MainScreen(
                     onSettingsTap = onSettingsTap
                 )
             }
-            
+
             // Force graph (when connected or reconnecting)
             if ((isConnected || isReconnecting) && showForceGraph) {
                 ForceGraph(
@@ -103,7 +105,7 @@ fun MainScreen(
                     isReconnecting = isReconnecting
                 )
             }
-            
+
             // WebView
             TimerWebView(
                 webViewBridge = webViewBridge,
@@ -112,21 +114,40 @@ fun MainScreen(
                     .weight(1f)
             )
         }
-        
-        // Floating settings button (when status bar is hidden)
-        if (!isConnected || !showStatusBar) {
+
+        // Floating action buttons grouped in a Column
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // Floating settings button (when status bar is hidden)
+            if (!isConnected || !showStatusBar) {
+                FloatingActionButton(
+                    onClick = onSettingsTap,
+                    modifier = Modifier.size(40.dp),
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = "Settings",
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
+            // Floating Analytics button
             FloatingActionButton(
-                onClick = onSettingsTap,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(16.dp)
-                    .size(40.dp),
-                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
-                contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                onClick = onHistoryTap,
+                modifier = Modifier.size(40.dp),
+                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f),
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
             ) {
                 Icon(
-                    imageVector = Icons.Default.Settings,
-                    contentDescription = "Settings",
+                    imageVector = Icons.Default.Analytics,
+                    contentDescription = "RAW Analytics",
                     modifier = Modifier.size(20.dp)
                 )
             }

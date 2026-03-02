@@ -32,14 +32,15 @@ fun SettingsScreen(
     onDisconnect: () -> Unit,
     onConnectDevice: () -> Unit,
     onRecalibrate: () -> Unit,
-    onViewLogs: () -> Unit
+    onViewLogs: () -> Unit, // Added comma here
+    onViewHistory: () -> Unit // Added missing parameter
 ) {
     val scope = rememberCoroutineScope()
     val connectionState by bluetoothManager.connectionState.collectAsStateWithLifecycle()
     val connectedDeviceName by bluetoothManager.connectedDeviceName.collectAsStateWithLifecycle()
     val selectedDeviceType by bluetoothManager.selectedDeviceType.collectAsStateWithLifecycle()
     val isConnected = connectionState == ConnectionState.Connected
-    
+
     // Collect all preferences
     val useLbs by preferencesRepository.useLbs.collectAsStateWithLifecycle(initialValue = false)
     val enableHaptics by preferencesRepository.enableHaptics.collectAsStateWithLifecycle(initialValue = true)
@@ -60,11 +61,11 @@ fun SettingsScreen(
     val autoSelectWeight by preferencesRepository.autoSelectWeight.collectAsStateWithLifecycle(initialValue = true)
     val enableEndSessionOnEarlyFail by preferencesRepository.enableEndSessionOnEarlyFail.collectAsStateWithLifecycle(initialValue = false)
     val earlyFailThresholdPercent by preferencesRepository.earlyFailThresholdPercent.collectAsStateWithLifecycle(initialValue = 0.50)
-    
+
     val scrapedTargetWeight by webViewBridge.targetWeight.collectAsStateWithLifecycle()
-    
+
     var showResetConfirmation by remember { mutableStateOf(false) }
-    
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -83,6 +84,16 @@ fun SettingsScreen(
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
         ) {
+            // RAW Analytics Section
+            SettingsSection(title = "RAW Analytics") {
+                ListItem(
+                    headlineContent = { Text("View Session History") },
+                    leadingContent = { Icon(Icons.Default.Analytics, contentDescription = null) },
+                    modifier = Modifier.clickableRow { onViewHistory() }
+                )
+            }
+
+
             // Target Weight section (only when connected)
             if (isConnected) {
                 SettingsSection(title = "Target Weight") {
@@ -91,16 +102,16 @@ fun SettingsScreen(
                         checked = enableTargetWeight,
                         onCheckedChange = { scope.launch { preferencesRepository.setEnableTargetWeight(it) } }
                     )
-                    
+
                     if (enableTargetWeight) {
                         SegmentedButtonRow(
                             options = listOf("Auto", "Manual"),
                             selectedIndex = if (useManualTarget) 1 else 0,
-                            onSelectionChanged = { 
+                            onSelectionChanged = {
                                 scope.launch { preferencesRepository.setUseManualTarget(it == 1) }
                             }
                         )
-                        
+
                         if (!useManualTarget) {
                             ListItem(
                                 headlineContent = { Text("Target") },
@@ -130,13 +141,13 @@ fun SettingsScreen(
                     }
                 }
             }
-            
+
             // Website section
             SettingsSection(title = "Website") {
                 ListItem(
                     headlineContent = { Text("Refresh Page") },
                     leadingContent = { Icon(Icons.Default.Refresh, contentDescription = null) },
-                    modifier = Modifier.clickableRow { 
+                    modifier = Modifier.clickableRow {
                         webViewBridge.reloadPage()
                         onDismiss()
                     }
@@ -147,13 +158,13 @@ fun SettingsScreen(
                     colors = ListItemDefaults.colors(
                         headlineColor = MaterialTheme.colorScheme.error
                     ),
-                    modifier = Modifier.clickableRow { 
+                    modifier = Modifier.clickableRow {
                         webViewBridge.clearWebsiteData()
                         onDismiss()
                     }
                 )
             }
-            
+
             // Grip Detection section (only when connected)
             if (isConnected) {
                 SettingsSection(title = "Grip Detection") {
@@ -162,20 +173,20 @@ fun SettingsScreen(
                         leadingContent = { Icon(Icons.Default.Refresh, contentDescription = null) },
                         modifier = Modifier.clickableRow { onRecalibrate() }
                     )
-                    
+
                     SwitchPreference(
                         title = "Tare on Startup",
                         checked = enableCalibration,
                         onCheckedChange = { scope.launch { preferencesRepository.setEnableCalibration(it) } }
                     )
-                    
+
                     Text(
                         text = "Zeros the scale when ${selectedDeviceType.shortName} connects to detect grip and fail states.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 16.dp)
                     )
-                    
+
                     SliderPreference(
                         title = "Tolerance",
                         value = weightTolerance,
@@ -186,7 +197,7 @@ fun SettingsScreen(
                     )
                 }
             }
-            
+
             // Display section
             SettingsSection(title = "Display") {
                 SwitchPreference(
@@ -194,19 +205,19 @@ fun SettingsScreen(
                     checked = showStatusBar,
                     onCheckedChange = { scope.launch { preferencesRepository.setShowStatusBar(it) } }
                 )
-                
+
                 SwitchPreference(
                     title = "Expanded Force Bar",
                     checked = expandedForceBar,
                     onCheckedChange = { scope.launch { preferencesRepository.setExpandedForceBar(it) } }
                 )
-                
+
                 SwitchPreference(
                     title = "Force Graph",
                     checked = showForceGraph,
                     onCheckedChange = { scope.launch { preferencesRepository.setShowForceGraph(it) } }
                 )
-                
+
                 if (showForceGraph) {
                     SegmentedButtonRow(
                         options = listOf("1s", "5s", "10s", "30s", "All"),
@@ -230,7 +241,7 @@ fun SettingsScreen(
                     )
                 }
             }
-            
+
             // Feedback section
             SettingsSection(title = "Feedback") {
                 SwitchPreference(
@@ -238,26 +249,28 @@ fun SettingsScreen(
                     checked = enableHaptics,
                     onCheckedChange = { scope.launch { preferencesRepository.setEnableHaptics(it) } }
                 )
-                
+
                 SwitchPreference(
                     title = "Target Weight Sounds",
                     checked = enableTargetSound,
                     onCheckedChange = { scope.launch { preferencesRepository.setEnableTargetSound(it) } }
                 )
-                
+
                 SwitchPreference(
                     title = "Grip Statistics",
                     checked = showGripStats,
                     onCheckedChange = { scope.launch { preferencesRepository.setShowGripStats(it) } }
                 )
-                
+
                 SwitchPreference(
                     title = "End-of-Set Summary",
                     checked = showSetReview,
                     onCheckedChange = { scope.launch { preferencesRepository.setShowSetReview(it) } }
                 )
             }
-            
+
+
+
             // Device section
             SettingsSection(title = "Device") {
                 if (isConnected) {
@@ -270,15 +283,15 @@ fun SettingsScreen(
                             )
                         }
                     )
-                    
+
                     ListItem(
                         headlineContent = { Text("Disconnect") },
-                        leadingContent = { 
+                        leadingContent = {
                             Icon(
-                                Icons.Default.BluetoothDisabled, 
+                                Icons.Default.BluetoothDisabled,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.error
-                            ) 
+                            )
                         },
                         colors = ListItemDefaults.colors(
                             headlineColor = MaterialTheme.colorScheme.error
@@ -293,7 +306,7 @@ fun SettingsScreen(
                     )
                 }
             }
-            
+
             // Debug section
             SettingsSection(title = "Debug") {
                 ListItem(
@@ -303,7 +316,7 @@ fun SettingsScreen(
                     modifier = Modifier.clickableRow { onViewLogs() }
                 )
             }
-            
+
             // Experimental section
             SettingsSection(title = "Experimental") {
                 SwitchPreference(
@@ -311,21 +324,21 @@ fun SettingsScreen(
                     checked = backgroundTimeSync,
                     onCheckedChange = { scope.launch { preferencesRepository.setBackgroundTimeSync(it) } }
                 )
-                
+
                 Text(
                     text = "Keeps the timer accurate when the app is in background.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp)
                 )
-                
+
                 if (backgroundTimeSync) {
                     SwitchPreference(
                         title = "Background Notification",
                         checked = enableLiveActivity,
                         onCheckedChange = { scope.launch { preferencesRepository.setEnableLiveActivity(it) } }
                     )
-                    
+
                     Text(
                         text = "Shows elapsed and remaining time in notification when backgrounded.",
                         style = MaterialTheme.typography.bodySmall,
@@ -333,19 +346,19 @@ fun SettingsScreen(
                         modifier = Modifier.padding(horizontal = 16.dp)
                     )
                 }
-                
+
                 SwitchPreference(
                     title = "Auto-set Target Weight",
                     checked = autoSelectWeight,
                     onCheckedChange = { scope.launch { preferencesRepository.setAutoSelectWeight(it) } }
                 )
-                
+
                 SwitchPreference(
                     title = "Balrog Avoidance",
                     checked = enableEndSessionOnEarlyFail,
                     onCheckedChange = { scope.launch { preferencesRepository.setEnableEndSessionOnEarlyFail(it) } }
                 )
-                
+
                 if (enableEndSessionOnEarlyFail) {
                     StepperPreference(
                         title = "Threshold",
@@ -360,7 +373,7 @@ fun SettingsScreen(
                             scope.launch { preferencesRepository.setEarlyFailThresholdPercent(newValue) }
                         }
                     )
-                    
+
                     Text(
                         text = "Abort session if grip fails before this % of target duration.",
                         style = MaterialTheme.typography.bodySmall,
@@ -369,21 +382,21 @@ fun SettingsScreen(
                     )
                 }
             }
-            
+
             // Units section
             SettingsSection(title = "Units") {
                 SegmentedButtonRow(
                     options = listOf("kg", "lbs"),
                     selectedIndex = if (useLbs) 1 else 0,
-                    onSelectionChanged = { 
+                    onSelectionChanged = {
                         scope.launch { preferencesRepository.setUseLbs(it == 1) }
                     }
                 )
             }
-            
+
             // Reset section
             Spacer(modifier = Modifier.height(16.dp))
-            
+
             Button(
                 onClick = { showResetConfirmation = true },
                 colors = ButtonDefaults.buttonColors(
@@ -398,18 +411,18 @@ fun SettingsScreen(
                 Spacer(modifier = Modifier.width(8.dp))
                 Text("Reset to Defaults")
             }
-            
+
             Text(
                 text = "Restores all settings to their recommended values.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
             )
-            
+
             Spacer(modifier = Modifier.height(32.dp))
         }
     }
-    
+
     // Reset confirmation dialog
     if (showResetConfirmation) {
         AlertDialog(
