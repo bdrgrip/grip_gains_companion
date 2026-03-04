@@ -2,206 +2,129 @@ package app.grip_gains_companion.ui.components
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
-import app.grip_gains_companion.config.AppConstants
 import app.grip_gains_companion.model.ForceHistoryEntry
-import java.util.Date
-import kotlin.math.max
-import kotlin.math.min
+import app.grip_gains_companion.ui.theme.GripGainsTheme
 
-/**
- * Real-time force graph showing recent force history
- */
 @Composable
 fun ForceGraph(
     forceHistory: List<ForceHistoryEntry>,
     useLbs: Boolean,
-    windowSeconds: Int, // 0 = entire session
-    targetWeight: Double?,
-    tolerance: Double?,
-    isReconnecting: Boolean = false,
-    modifier: Modifier = Modifier
+    windowSeconds: Int = 5,
+    targetWeight: Double? = null,
+    tolerance: Double? = null,
+    isReconnecting: Boolean = false
 ) {
-    val backgroundColor = MaterialTheme.colorScheme.surface
-    
-    // Filter history to the selected time window
-    val visibleHistory = remember(forceHistory, windowSeconds) {
-        if (windowSeconds <= 0) {
-            forceHistory
-        } else {
-            val cutoff = Date(System.currentTimeMillis() - windowSeconds * 1000L)
-            forceHistory.filter { it.timestamp.time >= cutoff.time }
-        }
-    }
-    
-    // Convert to display units
-    val displayMultiplier = if (useLbs) AppConstants.KG_TO_LBS else 1.0
-    val displayHistory = remember(visibleHistory, useLbs) {
-        visibleHistory.map { it.force * displayMultiplier }
-    }
-    
-    val displayTarget = targetWeight?.times(displayMultiplier)
-    val displayTolerance = tolerance?.times(displayMultiplier)
-    
-    // Calculate Y-axis domain
-    val (yMin, yMax) = remember(displayHistory, displayTarget, displayTolerance) {
-        val forces = displayHistory
-        var lower = forces.minOrNull() ?: 0.0
-        var upper = forces.maxOrNull() ?: 10.0
-        
-        // Include target and tolerance in range
-        if (displayTarget != null) {
-            val tolValue = displayTolerance ?: 0.0
-            lower = min(lower, displayTarget - tolValue)
-            upper = max(upper, displayTarget + tolValue)
-        }
-        
-        // Add padding (at least 0.5 units to give breathing room)
-        val range = upper - lower
-        val padding = max(range * 0.05, 0.5)
-        Pair(max(0.0, lower - padding), upper + padding)
-    }
-    
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(100.dp)
-            .background(backgroundColor)
-            .padding(horizontal = 16.dp, vertical = 8.dp)
-    ) {
-        if (visibleHistory.isEmpty()) {
-            // Empty state
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "No data",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+    // Force dark mode for this specific component so the colors always match the web app
+    GripGainsTheme(darkTheme = true) {
+        val primaryColor = MaterialTheme.colorScheme.primary
+        val targetLineColor = MaterialTheme.colorScheme.error.copy(alpha = 0.7f)
+        val toleranceBandColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+        val gridColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
+
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(120.dp)
+                .background(Color(0xFF1A2231)) // Hardcoded Grip Gains background
+                .padding(vertical = 8.dp)
+        ) {
+            if (forceHistory.isEmpty()) return@Canvas
+
+            val now = forceHistory.last().timestamp.time
+            val windowMs = windowSeconds * 1000L
+            val cutoff = now - windowMs
+
+            // Filter to visible window
+            val visibleHistory = forceHistory.filter { it.timestamp.time >= cutoff }
+            if (visibleHistory.isEmpty()) return@Canvas
+
+            val maxForceInWindow = visibleHistory.maxOfOrNull { it.force } ?: 1.0
+
+            // Calculate Y-axis bounds dynamically, anchoring at 0
+            val yMax = if (targetWeight != null) {
+                val targetWithTol = targetWeight + (tolerance ?: 0.0)
+                maxOf(maxForceInWindow, targetWithTol) * 1.2f // 20% headroom
+            } else {
+                maxOf(maxForceInWindow, 5.0) * 1.2f
             }
-        } else {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val width = size.width
-                val height = size.height
-                val yRange = yMax - yMin
-                
-                fun yToCanvas(y: Double): Float {
-                    return (height - ((y - yMin) / yRange * height)).toFloat()
-                }
-                
-                // Draw tolerance band
-                if (displayTarget != null && displayTolerance != null) {
-                    val upperY = yToCanvas(displayTarget + displayTolerance)
-                    val lowerY = yToCanvas(displayTarget - displayTolerance)
+
+            // Draw Target Band
+            if (targetWeight != null) {
+                val targetY = size.height - ((targetWeight / yMax) * size.height).toFloat()
+
+                if (tolerance != null) {
+                    val topY = size.height - (((targetWeight + tolerance) / yMax) * size.height).toFloat()
+                    val bottomY = size.height - (((targetWeight - tolerance) / yMax) * size.height).toFloat()
+
+                    // Tolerance fill
                     drawRect(
-                        color = Color.Gray.copy(alpha = 0.3f),
-                        topLeft = Offset(0f, upperY),
-                        size = androidx.compose.ui.geometry.Size(width, lowerY - upperY)
+                        color = toleranceBandColor,
+                        topLeft = Offset(0f, topY),
+                        size = Size(size.width, bottomY - topY)
                     )
                 }
-                
-                // Draw target line
-                if (displayTarget != null) {
-                    val targetY = yToCanvas(displayTarget)
-                    drawLine(
-                        color = Color(0xFF10B981).copy(alpha = 0.7f),
-                        start = Offset(0f, targetY),
-                        end = Offset(width, targetY),
-                        strokeWidth = 2f,
-                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 6f))
-                    )
-                }
-                
-                // Draw force line
-                if (displayHistory.size >= 2) {
-                    val path = Path()
-                    val xStep = width / (displayHistory.size - 1).coerceAtLeast(1)
-                    
-                    displayHistory.forEachIndexed { index, force ->
-                        val x = index * xStep
-                        val y = yToCanvas(force)
-                        
-                        if (index == 0) {
-                            path.moveTo(x, y)
-                        } else {
-                            path.lineTo(x, y)
-                        }
-                    }
-                    
-                    drawPath(
-                        path = path,
-                        color = Color(0xFF3B82F6),
-                        style = Stroke(width = 4f)
-                    )
-                }
-                
-                // Draw Y-axis labels (left side)
-                // Note: Text drawing in Canvas is complex in Compose, 
-                // so we'll use a simple approach with positioned elements outside
-            }
-            
-            // Y-axis labels overlay
-            Column(
-                modifier = Modifier.fillMaxHeight(),
-                verticalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = "${yMax.toInt()}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = "${yMin.toInt()}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+
+                // Target dashed line
+                drawLine(
+                    color = targetLineColor,
+                    start = Offset(0f, targetY),
+                    end = Offset(size.width, targetY),
+                    strokeWidth = 2.dp.toPx(),
+                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f)
                 )
             }
-        }
-        
-        // Reconnecting indicator overlay
-        if (isReconnecting) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Row(
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(8.dp)
-                ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Reconnecting...",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
+
+            // Draw Zero Line
+            drawLine(
+                color = gridColor,
+                start = Offset(0f, size.height),
+                end = Offset(size.width, size.height),
+                strokeWidth = 1.dp.toPx()
+            )
+
+            // Draw Live Force Path
+            val path = Path()
+            var pathStarted = false
+
+            visibleHistory.forEach { entry ->
+                val timeOffset = entry.timestamp.time - cutoff
+                val x = (timeOffset.toFloat() / windowMs.toFloat()) * size.width
+                val y = size.height - ((entry.force / yMax) * size.height).toFloat()
+
+                if (!pathStarted) {
+                    path.moveTo(x, y)
+                    pathStarted = true
+                } else {
+                    path.lineTo(x, y)
                 }
             }
+
+            val lineColor = if (isReconnecting) Color.Gray else primaryColor
+
+            drawPath(
+                path = path,
+                color = lineColor,
+                style = Stroke(
+                    width = 3.dp.toPx(),
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round
+                )
+            )
         }
     }
 }

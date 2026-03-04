@@ -6,8 +6,12 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 
-@Database(entities = [RawSessionEntity::class], version = 2, exportSchema = false)
-@TypeConverters(DoubleListConverter::class)
+@Database(
+    entities = [RawSessionEntity::class],
+    version = 2, // Increment from 1 to 2
+    exportSchema = false
+)
+@TypeConverters(Converters::class) // Add this line
 abstract class AppDatabase : RoomDatabase() {
     abstract fun rawSessionDao(): RawSessionDao
 

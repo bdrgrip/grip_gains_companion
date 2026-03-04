@@ -1,26 +1,27 @@
 package app.grip_gains_companion.ui.components
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.*
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import app.grip_gains_companion.ui.theme.StatusColors
-import app.grip_gains_companion.util.WeightFormatter
-import kotlin.math.abs
+import app.grip_gains_companion.ui.theme.GripGainsTheme
 
-/**
- * Compact status bar showing force reading and connection state
- */
 @Composable
 fun StatusBar(
     force: Double,
@@ -28,369 +29,172 @@ fun StatusBar(
     calibrating: Boolean,
     waitingForSamples: Boolean,
     calibrationTimeRemaining: Long,
-    weightMedian: Double?,
+    weightMedian: Double,
     targetWeight: Double?,
     isOffTarget: Boolean,
     offTargetDirection: Double?,
-    sessionMean: Double?,
-    sessionStdDev: Double?,
+    sessionMean: Double,
+    sessionStdDev: Double,
     useLbs: Boolean,
     expanded: Boolean,
-    deviceShortName: String = "device",
-    onUnitToggle: () -> Unit,
-    onSettingsTap: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val backgroundColor = MaterialTheme.colorScheme.surface
-    
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .background(backgroundColor)
-            .padding(horizontal = 16.dp, vertical = if (expanded) 20.dp else 10.dp),
-        verticalArrangement = Arrangement.spacedBy(if (expanded) 8.dp else 4.dp)
-    ) {
-        if (expanded) {
-            ExpandedLayout(
-                force = force,
-                engaged = engaged,
-                calibrating = calibrating,
-                waitingForSamples = waitingForSamples,
-                calibrationTimeRemaining = calibrationTimeRemaining,
-                weightMedian = weightMedian,
-                targetWeight = targetWeight,
-                isOffTarget = isOffTarget,
-                offTargetDirection = offTargetDirection,
-                sessionMean = sessionMean,
-                sessionStdDev = sessionStdDev,
-                useLbs = useLbs,
-                onUnitToggle = onUnitToggle,
-                onSettingsTap = onSettingsTap
-            )
-        } else {
-            CompactLayout(
-                force = force,
-                engaged = engaged,
-                calibrating = calibrating,
-                waitingForSamples = waitingForSamples,
-                calibrationTimeRemaining = calibrationTimeRemaining,
-                weightMedian = weightMedian,
-                targetWeight = targetWeight,
-                isOffTarget = isOffTarget,
-                offTargetDirection = offTargetDirection,
-                sessionMean = sessionMean,
-                sessionStdDev = sessionStdDev,
-                useLbs = useLbs,
-                onUnitToggle = onUnitToggle,
-                onSettingsTap = onSettingsTap
-            )
-        }
-        
-        // Calibration message
-        if (calibrating) {
-            Text(
-                text = "Don't touch $deviceShortName",
-                style = MaterialTheme.typography.labelMedium,
-                color = StatusColors.calibrating,
-                fontWeight = FontWeight.Medium
-            )
-        }
-    }
-}
-
-@Composable
-private fun CompactLayout(
-    force: Double,
-    engaged: Boolean,
-    calibrating: Boolean,
-    waitingForSamples: Boolean,
-    calibrationTimeRemaining: Long,
-    weightMedian: Double?,
-    targetWeight: Double?,
-    isOffTarget: Boolean,
-    offTargetDirection: Double?,
-    sessionMean: Double?,
-    sessionStdDev: Double?,
-    useLbs: Boolean,
+    deviceShortName: String,
     onUnitToggle: () -> Unit,
     onSettingsTap: () -> Unit
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        // Force display
-        Text(
-            text = WeightFormatter.format(force, useLbs),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = getForceColor(force, engaged, isOffTarget, weightMedian),
-            modifier = Modifier.clickable { onUnitToggle() }
-        )
-        
-        Spacer(modifier = Modifier.weight(1f))
-        
-        // Statistics
-        if (sessionMean != null) {
-            StatisticsDisplay(sessionMean, sessionStdDev, useLbs)
+    // Force dark mode just for this bar so it perfectly matches the web canvas
+    GripGainsTheme(darkTheme = true) {
+        val targetColor = when {
+            calibrating -> MaterialTheme.colorScheme.tertiary
+            engaged -> {
+                if (isOffTarget) {
+                    if (offTargetDirection != null && offTargetDirection > 0) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant
+                    }
+                } else {
+                    MaterialTheme.colorScheme.primary
+                }
+            }
+            // Hardcode the Grip Gains gray instead of using the theme surface
+            else -> Color(0xFF1A2231)
         }
-        
-        // Weight info
-        WeightDisplay(
-            weightMedian = weightMedian,
-            targetWeight = targetWeight,
-            isOffTarget = isOffTarget,
-            offTargetDirection = offTargetDirection,
-            engaged = engaged,
-            useLbs = useLbs
-        )
-        
-        // State badge
-        StateBadge(
-            engaged = engaged,
-            calibrating = calibrating,
-            waitingForSamples = waitingForSamples,
-            calibrationTimeRemaining = calibrationTimeRemaining
-        )
-        
-        // Settings button
-        IconButton(onClick = onSettingsTap, modifier = Modifier.size(32.dp)) {
-            Icon(
-                imageVector = Icons.Default.Settings,
-                contentDescription = "Settings",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
 
-@Composable
-private fun ExpandedLayout(
-    force: Double,
-    engaged: Boolean,
-    calibrating: Boolean,
-    waitingForSamples: Boolean,
-    calibrationTimeRemaining: Long,
-    weightMedian: Double?,
-    targetWeight: Double?,
-    isOffTarget: Boolean,
-    offTargetDirection: Double?,
-    sessionMean: Double?,
-    sessionStdDev: Double?,
-    useLbs: Boolean,
-    onUnitToggle: () -> Unit,
-    onSettingsTap: () -> Unit
-) {
-    // Top row: measured weight on left, badge and settings on right
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        // Measured weight
-        if (weightMedian != null && !engaged) {
-            Text(
-                text = "⚖ ${WeightFormatter.format(weightMedian, useLbs)}",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        
-        Spacer(modifier = Modifier.weight(1f))
-        
-        StateBadge(
-            engaged = engaged,
-            calibrating = calibrating,
-            waitingForSamples = waitingForSamples,
-            calibrationTimeRemaining = calibrationTimeRemaining
+        val animatedColor by animateColorAsState(
+            targetValue = targetColor,
+            animationSpec = spring(stiffness = Spring.StiffnessLow),
+            label = "StatusBarColor"
         )
-        
-        Spacer(modifier = Modifier.width(8.dp))
-        
-        IconButton(onClick = onSettingsTap, modifier = Modifier.size(32.dp)) {
-            Icon(
-                imageVector = Icons.Default.Settings,
-                contentDescription = "Settings",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-    
-    // Center: giant force number
-    Box(
-        modifier = Modifier.fillMaxWidth(),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = WeightFormatter.format(force, useLbs),
-            style = MaterialTheme.typography.displayMedium,
-            fontWeight = FontWeight.Bold,
-            color = getForceColor(force, engaged, isOffTarget, weightMedian),
-            modifier = Modifier.clickable { onUnitToggle() }
-        )
-    }
-    
-    // Bottom row: stats on left, target on right
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        if (sessionMean != null) {
-            StatisticsDisplay(sessionMean, sessionStdDev, useLbs)
-        }
-        
-        Spacer(modifier = Modifier.weight(1f))
-        
-        TargetWeightDisplay(
-            targetWeight = targetWeight,
-            isOffTarget = isOffTarget,
-            offTargetDirection = offTargetDirection,
-            useLbs = useLbs
-        )
-    }
-}
 
-@Composable
-private fun StatisticsDisplay(
-    mean: Double,
-    stdDev: Double?,
-    useLbs: Boolean
-) {
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        // Mean
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = "x̄",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.width(2.dp))
-            Text(
-                text = WeightFormatter.format(mean, useLbs),
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        
-        // Std dev
-        if (stdDev != null && stdDev > 0) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = "σ",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.width(2.dp))
-                Text(
-                    text = WeightFormatter.format(stdDev, useLbs, includeUnit = false),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(animatedColor)
+                .padding(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    if (calibrating) {
+                        Text(
+                            "CALIBRATING...",
+                            color = MaterialTheme.colorScheme.onTertiary,
+                            fontSize = 24.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "Hold steady for ${calibrationTimeRemaining / 1000}s",
+                            color = MaterialTheme.colorScheme.onTertiary.copy(alpha = 0.8f),
+                            fontSize = 14.sp
+                        )
+                    } else {
+                        val displayForce = if (useLbs) force * 2.20462 else force
+                        val unitStr = if (useLbs) "LBS" else "KG"
+
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            Text(
+                                String.format("%.1f", displayForce),
+                                color = if (engaged && !isOffTarget) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                                fontSize = 48.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.clickable { onUnitToggle() }
+                            )
+                            Text(
+                                unitStr,
+                                color = if (engaged && !isOffTarget) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
+                            )
+                        }
+
+                        if (targetWeight != null) {
+                            val displayTarget = if (useLbs) targetWeight * 2.20462 else targetWeight
+                            val statusText = when {
+                                !engaged -> "Target: ${String.format("%.1f", displayTarget)} $unitStr"
+                                isOffTarget -> if (offTargetDirection != null && offTargetDirection > 0) "TOO HIGH!" else "TOO LOW!"
+                                else -> "ON TARGET"
+                            }
+                            Text(
+                                statusText,
+                                color = if (engaged && !isOffTarget) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+
+                IconButton(onClick = onSettingsTap) {
+                    Icon(
+                        Icons.Default.Settings,
+                        contentDescription = "Settings",
+                        tint = if (engaged && !isOffTarget) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+
+            if (expanded && !calibrating) {
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    StatItem(
+                        label = "MEDIAN",
+                        value = if (useLbs) weightMedian * 2.20462 else weightMedian,
+                        engaged = engaged,
+                        isOffTarget = isOffTarget
+                    )
+                    StatItem(
+                        label = "MEAN",
+                        value = if (useLbs) sessionMean * 2.20462 else sessionMean,
+                        engaged = engaged,
+                        isOffTarget = isOffTarget
+                    )
+                    StatItem(
+                        label = "DEV",
+                        value = if (useLbs) sessionStdDev * 2.20462 else sessionStdDev,
+                        engaged = engaged,
+                        isOffTarget = isOffTarget
+                    )
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(
+                            "DEVICE",
+                            color = if (engaged && !isOffTarget) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            deviceShortName,
+                            color = if (engaged && !isOffTarget) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun WeightDisplay(
-    weightMedian: Double?,
-    targetWeight: Double?,
-    isOffTarget: Boolean,
-    offTargetDirection: Double?,
-    engaged: Boolean,
-    useLbs: Boolean
-) {
-    if (weightMedian != null && !engaged) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = "⚖ ${WeightFormatter.format(weightMedian, useLbs)}",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            
-            if (targetWeight != null) {
-                Text(
-                    text = " → ${WeightFormatter.format(targetWeight, useLbs)}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                )
-            }
-        }
-    } else if (engaged && targetWeight != null) {
-        TargetWeightDisplay(targetWeight, isOffTarget, offTargetDirection, useLbs)
-    }
-}
-
-@Composable
-private fun TargetWeightDisplay(
-    targetWeight: Double?,
-    isOffTarget: Boolean,
-    offTargetDirection: Double?,
-    useLbs: Boolean
-) {
-    if (targetWeight != null) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = "Target: ${WeightFormatter.format(targetWeight, useLbs)}",
-                style = MaterialTheme.typography.labelMedium,
-                color = if (isOffTarget) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            
-            if (isOffTarget && offTargetDirection != null) {
-                val sign = if (offTargetDirection > 0) "+" else ""
-                Text(
-                    text = " ($sign${WeightFormatter.format(offTargetDirection, useLbs)})",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.error
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun StateBadge(
-    engaged: Boolean,
-    calibrating: Boolean,
-    waitingForSamples: Boolean,
-    calibrationTimeRemaining: Long
-) {
-    val (text, color) = when {
-        waitingForSamples -> "Waiting" to StatusColors.idle
-        calibrating -> "${calibrationTimeRemaining / 1000}s" to StatusColors.calibrating
-        engaged -> "Gripping" to StatusColors.gripping
-        else -> "Idle" to StatusColors.idle
-    }
-    
-    Surface(
-        shape = RoundedCornerShape(4.dp),
-        color = color
-    ) {
+private fun StatItem(label: String, value: Double, engaged: Boolean, isOffTarget: Boolean) {
+    Column {
         Text(
-            text = text,
-            style = MaterialTheme.typography.labelSmall,
-            color = Color.White,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+            label,
+            color = if (engaged && !isOffTarget) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold
         )
-    }
-}
-
-private fun getForceColor(
-    force: Double,
-    engaged: Boolean,
-    isOffTarget: Boolean,
-    weightMedian: Double?
-): Color {
-    return when {
-        engaged && isOffTarget -> Color(0xFFEF4444) // Red
-        engaged -> Color(0xFF10B981) // Green
-        force > (weightMedian ?: 3.0) -> Color(0xFF3B82F6) // Blue
-        else -> Color(0xFF6B7280) // Gray
+        Text(
+            String.format("%.1f", value),
+            color = if (engaged && !isOffTarget) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Medium
+        )
     }
 }

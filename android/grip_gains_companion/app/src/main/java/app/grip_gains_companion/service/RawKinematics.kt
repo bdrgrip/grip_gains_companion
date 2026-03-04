@@ -5,13 +5,13 @@ import kotlin.math.max
 import kotlin.math.sqrt
 
 data class SessionResult(
-    val mechanicalWork: Double,
     val workoutScore: Double,
+    val mechanicalWork: Double,
     val timeSeries: List<Double>,
     val tensionSeries: List<Double>,
     val magnitudeSeries: List<Double>,
     val powerSeries: List<Double>,
-    val fluxSeries: List<Double>,
+    val densitySeries: List<Double>,
     val workSeries: List<Double>
 )
 
@@ -67,7 +67,6 @@ class RawSessionManager {
         if (!isHoldActive || holds.isEmpty()) return
         val currentHold = holds.last()
 
-        // Initialize the clock using the ACTUAL hardware sensor timestamp
         if (currentHold.lastTimestamp == 0L) {
             currentHold.firstTimestamp = timestampNanos
             currentHold.lastTimestamp = timestampNanos
@@ -110,12 +109,11 @@ class RawSessionManager {
         val tensionSeries = mutableListOf<Double>()
         val magnitudeSeries = mutableListOf<Double>()
         val powerSeries = mutableListOf<Double>()
-        val fluxSeries = mutableListOf<Double>()
+        val densitySeries = mutableListOf<Double>()
         val workSeries = mutableListOf<Double>()
 
         var globalTimeOffset = 0.0
         var fatigueCarryover = 0.0
-        val fluxWindow = 150
         var holdIndex = 1
 
         holds.forEachIndexed { index, hold ->
@@ -154,9 +152,24 @@ class RawSessionManager {
                 powerSeries.add(instPower)
                 workSeries.add(totalWork)
 
-                val wStart = max(0, powerSeries.size - fluxWindow)
-                val validPowers = powerSeries.subList(wStart, powerSeries.size).filter { !it.isNaN() }
-                fluxSeries.add(if (validPowers.isNotEmpty()) validPowers.average() else 0.0)
+                val currentIndex = powerSeries.size - 1
+                val windowStartTime = globalTime - 3.0
+                var powerSum = 0.0
+                var powerCount = 0
+
+                for (j in currentIndex downTo 0) {
+                    if (timeSeries[j] >= windowStartTime) {
+                        if (!powerSeries[j].isNaN()) {
+                            powerSum += powerSeries[j]
+                            powerCount++
+                        }
+                    } else {
+                        break
+                    }
+                }
+
+                val density = if (powerCount > 0) powerSum / powerCount else 0.0
+                densitySeries.add(density)
             }
 
             totalScore += holdScore
@@ -171,12 +184,64 @@ class RawSessionManager {
                 tensionSeries.add(Double.NaN)
                 magnitudeSeries.add(Double.NaN)
                 powerSeries.add(Double.NaN)
-                fluxSeries.add(Double.NaN)
+                densitySeries.add(Double.NaN)
                 workSeries.add(totalWork)
             }
             holdIndex++
         }
 
-        return SessionResult(totalWork, totalScore, timeSeries, tensionSeries, magnitudeSeries, powerSeries, fluxSeries, workSeries)
+        val decimationFactor = 10
+
+        val dTimes = mutableListOf<Double>()
+        val dTensions = mutableListOf<Double>()
+        val dMags = mutableListOf<Double>()
+        val dPowers = mutableListOf<Double>()
+        val dDensities = mutableListOf<Double>()
+        val dWorks = mutableListOf<Double>()
+
+        var i = 0
+        while (i < timeSeries.size) {
+            if (timeSeries[i].isNaN() || tensionSeries[i].isNaN()) {
+                dTimes.add(timeSeries[i])
+                dTensions.add(Double.NaN)
+                dMags.add(Double.NaN)
+                dPowers.add(Double.NaN)
+                dDensities.add(Double.NaN)
+                dWorks.add(workSeries[i])
+                i++
+                continue
+            }
+
+            var count = 0
+            var sumTension = 0.0
+            var sumMag = 0.0
+            var sumPower = 0.0
+            var sumDensity = 0.0
+
+            val chunkEnd = kotlin.math.min(i + decimationFactor, timeSeries.size)
+            var lastValidIndex = i
+
+            while (i < chunkEnd && !timeSeries[i].isNaN() && !tensionSeries[i].isNaN()) {
+                sumTension += tensionSeries[i]
+                sumMag += magnitudeSeries[i]
+                sumPower += powerSeries[i]
+                sumDensity += densitySeries[i]
+                lastValidIndex = i
+                count++
+                i++
+            }
+
+            if (count > 0) {
+                dTimes.add(timeSeries[lastValidIndex])
+                dWorks.add(workSeries[lastValidIndex])
+
+                dTensions.add(sumTension / count)
+                dMags.add(sumMag / count)
+                dPowers.add(sumPower / count)
+                dDensities.add(sumDensity / count)
+            }
+        }
+
+        return SessionResult(totalWork, totalScore, dTimes, dTensions, dMags, dPowers, dDensities, dWorks)
     }
 }

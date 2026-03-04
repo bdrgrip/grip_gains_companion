@@ -126,7 +126,8 @@ object JavaScriptBridge {
     val checkFailButtonState = """
         (function() {
             const button = document.querySelector('button.btn-fail-prominent');
-            const enabled = button && !button.disabled;
+            // If the button is completely gone (Rest Interval), evaluate as false
+            const enabled = button ? !button.disabled : false;
             Android.onButtonStateChanged(enabled);
         })();
     """.trimIndent()
@@ -136,23 +137,32 @@ object JavaScriptBridge {
      */
     val observerScript = """
         (function() {
-            function setupObserver() {
+            let lastState = null;
+
+            function checkButtonState() {
                 const button = document.querySelector('button.btn-fail-prominent');
-                if (!button) {
-                    setTimeout(setupObserver, 100);
-                    return;
+                // If the button exists and is not disabled, we are in an active rep.
+                // If it is missing (like during a Rest interval), we are inactive.
+                const isEnabled = button ? !button.disabled : false;
+                
+                if (isEnabled !== lastState) {
+                    Android.onButtonStateChanged(isEnabled);
+                    lastState = isEnabled;
                 }
+            }
 
-                const observer = new MutationObserver(function() {
-                    Android.onButtonStateChanged(!button.disabled);
+            function setupObserver() {
+                // Observe the whole document body because the button is added/removed from the DOM dynamically
+                const observer = new MutationObserver(checkButtonState);
+                
+                observer.observe(document.body, {
+                    childList: true, // Catches the button being deleted/recreated
+                    subtree: true,
+                    attributes: true, 
+                    attributeFilter: ['disabled', 'class'] // Catches it just being greyed out
                 });
 
-                observer.observe(button, {
-                    attributes: true,
-                    attributeFilter: ['disabled', 'class']
-                });
-
-                Android.onButtonStateChanged(!button.disabled);
+                checkButtonState();
             }
 
             if (document.readyState === 'loading') {
@@ -392,12 +402,20 @@ object JavaScriptBridge {
     /**
      * MutationObserver script for remaining time from timer display
      */
+    /**
+     * MutationObserver script for remaining time from timer display (Elevated to body to survive DOM rebuilds)
+     */
     val remainingTimeObserverScript = """
         (function() {
+            let lastTime = null;
+
             function scrapeAndSendRemainingTime() {
                 const timerValue = document.querySelector('.timer-value');
                 if (!timerValue) {
-                    Android.onRemainingTimeChanged(-9999);
+                    if (lastTime !== -9999) {
+                        Android.onRemainingTimeChanged(-9999);
+                        lastTime = -9999;
+                    }
                     return;
                 }
 
@@ -410,36 +428,22 @@ object JavaScriptBridge {
                     seconds = parseInt(text);
                 }
 
-                if (!isNaN(seconds)) {
-                    Android.onRemainingTimeChanged(seconds);
-                } else {
-                    Android.onRemainingTimeChanged(-9999);
+                const finalSeconds = isNaN(seconds) ? -9999 : seconds;
+                
+                if (finalSeconds !== lastTime) {
+                    Android.onRemainingTimeChanged(finalSeconds);
+                    lastTime = finalSeconds;
                 }
             }
 
             function setupRemainingTimeObserver() {
-                const timerValue = document.querySelector('.timer-value');
-                if (!timerValue) {
-                    setTimeout(setupRemainingTimeObserver, 200);
-                    return;
-                }
+                const observer = new MutationObserver(scrapeAndSendRemainingTime);
 
-                const observer = new MutationObserver(function() {
-                    scrapeAndSendRemainingTime();
-                });
-
-                observer.observe(timerValue, {
+                observer.observe(document.body, {
                     childList: true,
                     subtree: true,
                     characterData: true
                 });
-
-                if (timerValue.parentElement) {
-                    observer.observe(timerValue.parentElement, {
-                        childList: true,
-                        subtree: true
-                    });
-                }
 
                 scrapeAndSendRemainingTime();
             }

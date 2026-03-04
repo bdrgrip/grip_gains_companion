@@ -5,19 +5,21 @@ import android.view.ViewGroup
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.remember
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import app.grip_gains_companion.config.AppConstants
 import app.grip_gains_companion.service.web.JavaScriptBridge
 import app.grip_gains_companion.service.web.WebViewBridge
 
-/**
- * Composable wrapper for WebView that displays the gripgains.ca timer page
- */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun TimerWebView(
@@ -25,15 +27,23 @@ fun TimerWebView(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    
+    val webBackgroundColor = Color(0xFF1A2231)
+
+    var pageLoaded by remember { mutableStateOf(false) }
+    val alpha by animateFloatAsState(
+        targetValue = if (pageLoaded) 1f else 0f,
+        animationSpec = tween(durationMillis = 300),
+        label = "WebViewFade"
+    )
+
     val webView = remember {
         WebView(context).apply {
+            setBackgroundColor(android.graphics.Color.parseColor("#1A2231"))
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
-            
-            // Configure WebView settings
+
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
@@ -43,22 +53,16 @@ fun TimerWebView(
                 displayZoomControls = false
                 loadWithOverviewMode = true
                 useWideViewPort = true
-                
-                // Security settings
                 allowFileAccess = false
                 allowContentAccess = false
             }
-            
-            // Add JavaScript interface
+
             addJavascriptInterface(webViewBridge, "Android")
             webViewBridge.setWebView(this)
-            
-            // Set up WebViewClient
+
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
-                    
-                    // Inject scripts after page loads
                     view?.evaluateJavascript(JavaScriptBridge.backgroundTimeOffsetScript, null)
                     view?.evaluateJavascript(JavaScriptBridge.closePickerOnLoadScript, null)
                     view?.evaluateJavascript(JavaScriptBridge.observerScript, null)
@@ -66,22 +70,23 @@ fun TimerWebView(
                     view?.evaluateJavascript(JavaScriptBridge.remainingTimeObserverScript, null)
                     view?.evaluateJavascript(JavaScriptBridge.settingsVisibilityObserverScript, null)
                     view?.evaluateJavascript(JavaScriptBridge.saveButtonObserverScript, null)
+
+                    pageLoaded = true // Trigger the fade-in animation
                 }
             }
-            
-            // Load the gripgains timer page
+
             loadUrl(AppConstants.GRIP_GAINS_URL)
         }
     }
-    
+
     DisposableEffect(Unit) {
-        onDispose {
-            webView.destroy()
-        }
+        onDispose { webView.destroy() }
     }
-    
-    AndroidView(
-        factory = { webView },
-        modifier = modifier
-    )
+
+    Box(modifier = modifier.background(webBackgroundColor)) {
+        AndroidView(
+            factory = { webView },
+            modifier = Modifier.fillMaxSize().alpha(alpha)
+        )
+    }
 }

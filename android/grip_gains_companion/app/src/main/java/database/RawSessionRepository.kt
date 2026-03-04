@@ -1,25 +1,23 @@
 package app.grip_gains_companion.database
 
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.withContext
 
 class RawSessionRepository(private val dao: RawSessionDao) {
     val allSessions: Flow<List<RawSessionEntity>> = dao.getAllSessions()
 
-    suspend fun insert(session: RawSessionEntity): Long = withContext(Dispatchers.IO) {
-        dao.insertSession(session)
+    fun getSessionById(id: Long): Flow<RawSessionEntity?> {
+        return dao.getSessionById(id)
     }
 
-    suspend fun update(session: RawSessionEntity): Int = withContext(Dispatchers.IO) {
-        dao.updateSession(session)
+    suspend fun insert(session: RawSessionEntity) {
+        dao.insert(session)
     }
 
-    suspend fun delete(session: RawSessionEntity): Int = withContext(Dispatchers.IO) {
-        dao.deleteSession(session)
+    suspend fun update(session: RawSessionEntity) {
+        dao.update(session)
     }
 
-    suspend fun clearHistory(): Int = withContext(Dispatchers.IO) {
-        dao.clearAllHistory()
+    suspend fun delete(session: RawSessionEntity) {
+        dao.delete(session)
     }
 }

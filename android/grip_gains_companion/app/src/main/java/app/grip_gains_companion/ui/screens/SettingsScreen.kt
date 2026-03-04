@@ -1,16 +1,25 @@
 package app.grip_gains_companion.ui.screens
 
+import android.annotation.SuppressLint
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.grip_gains_companion.config.AppConstants
@@ -28,31 +37,30 @@ fun SettingsScreen(
     preferencesRepository: PreferencesRepository,
     bluetoothManager: BluetoothManager,
     webViewBridge: WebViewBridge,
+    activeKinematicsSource: KinematicsSource,
+    currentManualWeight: Double,
+    onKinematicsChange: (KinematicsSource) -> Unit,
+    onWeightChange: (Double) -> Unit,
     onDismiss: () -> Unit,
     onDisconnect: () -> Unit,
     onConnectDevice: () -> Unit,
     onRecalibrate: () -> Unit,
-    onViewLogs: () -> Unit, // Added comma here
-    onViewHistory: () -> Unit // Added missing parameter
+    onViewLogs: () -> Unit,
+    onViewHistory: () -> Unit
 ) {
-    val scope = rememberCoroutineScope()
-    val connectionState by bluetoothManager.connectionState.collectAsStateWithLifecycle()
-    val connectedDeviceName by bluetoothManager.connectedDeviceName.collectAsStateWithLifecycle()
-    val selectedDeviceType by bluetoothManager.selectedDeviceType.collectAsStateWithLifecycle()
-    val isConnected = connectionState == ConnectionState.Connected
+    val coroutineScope = rememberCoroutineScope()
 
-    // Collect all preferences
+    // 1. Collect all preferences
     val useLbs by preferencesRepository.useLbs.collectAsStateWithLifecycle(initialValue = false)
-    val enableHaptics by preferencesRepository.enableHaptics.collectAsStateWithLifecycle(initialValue = true)
-    val enableTargetSound by preferencesRepository.enableTargetSound.collectAsStateWithLifecycle(initialValue = true)
     val showStatusBar by preferencesRepository.showStatusBar.collectAsStateWithLifecycle(initialValue = true)
     val expandedForceBar by preferencesRepository.expandedForceBar.collectAsStateWithLifecycle(initialValue = true)
     val showForceGraph by preferencesRepository.showForceGraph.collectAsStateWithLifecycle(initialValue = true)
     val forceGraphWindow by preferencesRepository.forceGraphWindow.collectAsStateWithLifecycle(initialValue = 5)
     val enableTargetWeight by preferencesRepository.enableTargetWeight.collectAsStateWithLifecycle(initialValue = true)
     val useManualTarget by preferencesRepository.useManualTarget.collectAsStateWithLifecycle(initialValue = false)
-    val manualTargetWeight by preferencesRepository.manualTargetWeight.collectAsStateWithLifecycle(initialValue = 20.0)
     val weightTolerance by preferencesRepository.weightTolerance.collectAsStateWithLifecycle(initialValue = 0.5)
+    val enableHaptics by preferencesRepository.enableHaptics.collectAsStateWithLifecycle(initialValue = true)
+    val enableTargetSound by preferencesRepository.enableTargetSound.collectAsStateWithLifecycle(initialValue = true)
     val enableCalibration by preferencesRepository.enableCalibration.collectAsStateWithLifecycle(initialValue = true)
     val showGripStats by preferencesRepository.showGripStats.collectAsStateWithLifecycle(initialValue = true)
     val showSetReview by preferencesRepository.showSetReview.collectAsStateWithLifecycle(initialValue = false)
@@ -62,8 +70,13 @@ fun SettingsScreen(
     val enableEndSessionOnEarlyFail by preferencesRepository.enableEndSessionOnEarlyFail.collectAsStateWithLifecycle(initialValue = false)
     val earlyFailThresholdPercent by preferencesRepository.earlyFailThresholdPercent.collectAsStateWithLifecycle(initialValue = 0.50)
 
-    val scrapedTargetWeight by webViewBridge.targetWeight.collectAsStateWithLifecycle()
+    val connectionState by bluetoothManager.connectionState.collectAsStateWithLifecycle()
+    val connectedDeviceName by bluetoothManager.connectedDeviceName.collectAsStateWithLifecycle()
+    val discoveredDevices by bluetoothManager.discoveredDevices.collectAsStateWithLifecycle()
 
+    var showTensionSheet by remember { mutableStateOf(false) }
+    var showKinematicsSheet by remember { mutableStateOf(false) }
+    var localManualWeight by remember { mutableStateOf(currentManualWeight.toString()) }
     var showResetConfirmation by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -72,7 +85,7 @@ fun SettingsScreen(
                 title = { Text("Settings") },
                 navigationIcon = {
                     IconButton(onClick = onDismiss) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.Default.Close, contentDescription = "Close")
                     }
                 }
             )
@@ -80,492 +93,339 @@ fun SettingsScreen(
     ) { padding ->
         Column(
             modifier = Modifier
-                .fillMaxSize()
                 .padding(padding)
+                .fillMaxSize()
                 .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
-            // RAW Analytics Section
-            SettingsSection(title = "RAW Analytics") {
-                ListItem(
-                    headlineContent = { Text("View Session History") },
-                    leadingContent = { Icon(Icons.Default.Analytics, contentDescription = null) },
-                    modifier = Modifier.clickableRow { onViewHistory() }
+
+            // --- DATA SOURCES ---
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text("Data Sources", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+
+                DataSourceCard(
+                    title = "Tension Data",
+                    icon = Icons.Default.FitnessCenter,
+                    activeSource = if (connectionState == ConnectionState.Connected) {
+                        connectedDeviceName ?: "Bluetooth Scale"
+                    } else {
+                        "Basic Timer ($localManualWeight)"
+                    },
+                    statusColor = if (connectionState == ConnectionState.Connected) Color.Green else Color.LightGray,
+                    onClick = {
+                        bluetoothManager.startScanning()
+                        showTensionSheet = true
+                    }
+                )
+
+                DataSourceCard(
+                    title = "Kinematics Data",
+                    icon = Icons.Default.Speed,
+                    activeSource = if (activeKinematicsSource == KinematicsSource.PHONE) "Phone Accelerometer" else "M5StickC Plus 2",
+                    statusColor = if (activeKinematicsSource == KinematicsSource.PHONE) Color.Cyan else Color(0xFFE65100),
+                    onClick = { showKinematicsSheet = true }
                 )
             }
 
+            HorizontalDivider()
 
-            // Target Weight section (only when connected)
-            if (isConnected) {
-                SettingsSection(title = "Target Weight") {
-                    SwitchPreference(
-                        title = "Enable Target Weight",
-                        checked = enableTargetWeight,
-                        onCheckedChange = { scope.launch { preferencesRepository.setEnableTargetWeight(it) } }
-                    )
+            // --- DISPLAY ---
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Display & Feedback", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
 
-                    if (enableTargetWeight) {
-                        SegmentedButtonRow(
-                            options = listOf("Auto", "Manual"),
-                            selectedIndex = if (useManualTarget) 1 else 0,
-                            onSelectionChanged = {
-                                scope.launch { preferencesRepository.setUseManualTarget(it == 1) }
-                            }
-                        )
-
-                        if (!useManualTarget) {
-                            ListItem(
-                                headlineContent = { Text("Target") },
-                                trailingContent = {
-                                    Text(
-                                        text = scrapedTargetWeight?.let { WeightFormatter.format(it, useLbs) } ?: "Not detected",
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            )
-                            Text(
-                                text = "Target weight is automatically read from the timer page",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 16.dp)
-                            )
-                        } else {
-                            SliderPreference(
-                                title = "Manual Target",
-                                value = manualTargetWeight,
-                                valueRange = 0.5..100.0,
-                                steps = 199,
-                                valueFormat = { WeightFormatter.format(it, useLbs) },
-                                onValueChange = { scope.launch { preferencesRepository.setManualTargetWeight(it) } }
-                            )
-                        }
-                    }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    Text("Use Imperial Units (lbs)")
+                    Switch(checked = useLbs, onCheckedChange = { coroutineScope.launch { preferencesRepository.setUseLbs(it) } })
                 }
-            }
-
-            // Website section
-            SettingsSection(title = "Website") {
-                ListItem(
-                    headlineContent = { Text("Refresh Page") },
-                    leadingContent = { Icon(Icons.Default.Refresh, contentDescription = null) },
-                    modifier = Modifier.clickableRow {
-                        webViewBridge.reloadPage()
-                        onDismiss()
-                    }
-                )
-                ListItem(
-                    headlineContent = { Text("Clear Website Data") },
-                    leadingContent = { Icon(Icons.Default.Delete, contentDescription = null) },
-                    colors = ListItemDefaults.colors(
-                        headlineColor = MaterialTheme.colorScheme.error
-                    ),
-                    modifier = Modifier.clickableRow {
-                        webViewBridge.clearWebsiteData()
-                        onDismiss()
-                    }
-                )
-            }
-
-            // Grip Detection section (only when connected)
-            if (isConnected) {
-                SettingsSection(title = "Grip Detection") {
-                    ListItem(
-                        headlineContent = { Text("Recalibrate Tare") },
-                        leadingContent = { Icon(Icons.Default.Refresh, contentDescription = null) },
-                        modifier = Modifier.clickableRow { onRecalibrate() }
-                    )
-
-                    SwitchPreference(
-                        title = "Tare on Startup",
-                        checked = enableCalibration,
-                        onCheckedChange = { scope.launch { preferencesRepository.setEnableCalibration(it) } }
-                    )
-
-                    Text(
-                        text = "Zeros the scale when ${selectedDeviceType.shortName} connects to detect grip and fail states.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp)
-                    )
-
-                    SliderPreference(
-                        title = "Tolerance",
-                        value = weightTolerance,
-                        valueRange = 0.1..5.0,
-                        steps = 49,
-                        valueFormat = { "±${WeightFormatter.format(it, useLbs)}" },
-                        onValueChange = { scope.launch { preferencesRepository.setWeightTolerance(it) } }
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    Text("Show Status Bar")
+                    Switch(checked = showStatusBar, onCheckedChange = { coroutineScope.launch { preferencesRepository.setShowStatusBar(it) } })
                 }
-            }
-
-            // Display section
-            SettingsSection(title = "Display") {
-                SwitchPreference(
-                    title = "Show Force Bar",
-                    checked = showStatusBar,
-                    onCheckedChange = { scope.launch { preferencesRepository.setShowStatusBar(it) } }
-                )
-
-                SwitchPreference(
-                    title = "Expanded Force Bar",
-                    checked = expandedForceBar,
-                    onCheckedChange = { scope.launch { preferencesRepository.setExpandedForceBar(it) } }
-                )
-
-                SwitchPreference(
-                    title = "Force Graph",
-                    checked = showForceGraph,
-                    onCheckedChange = { scope.launch { preferencesRepository.setShowForceGraph(it) } }
-                )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    Text("Expanded Force Bar")
+                    Switch(checked = expandedForceBar, onCheckedChange = { coroutineScope.launch { preferencesRepository.setExpandedForceBar(it) } })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    Text("Show Force Graph")
+                    Switch(checked = showForceGraph, onCheckedChange = { coroutineScope.launch { preferencesRepository.setShowForceGraph(it) } })
+                }
 
                 if (showForceGraph) {
-                    SegmentedButtonRow(
-                        options = listOf("1s", "5s", "10s", "30s", "All"),
-                        selectedIndex = when (forceGraphWindow) {
-                            1 -> 0
-                            5 -> 1
-                            10 -> 2
-                            30 -> 3
-                            else -> 4
-                        },
-                        onSelectionChanged = {
-                            val value = when (it) {
-                                0 -> 1
-                                1 -> 5
-                                2 -> 10
-                                3 -> 30
-                                else -> 0
-                            }
-                            scope.launch { preferencesRepository.setForceGraphWindow(value) }
-                        }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("Force Graph Window: ${forceGraphWindow}s", style = MaterialTheme.typography.bodyMedium)
+                    Slider(
+                        value = forceGraphWindow.toFloat(),
+                        onValueChange = { coroutineScope.launch { preferencesRepository.setForceGraphWindow(it.toInt()) } },
+                        valueRange = 2f..15f,
+                        steps = 12
                     )
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    Text("Haptic Feedback")
+                    Switch(checked = enableHaptics, onCheckedChange = { coroutineScope.launch { preferencesRepository.setEnableHaptics(it) } })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    Text("Target Weight Sounds")
+                    Switch(checked = enableTargetSound, onCheckedChange = { coroutineScope.launch { preferencesRepository.setEnableTargetSound(it) } })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    Text("Grip Statistics")
+                    Switch(checked = showGripStats, onCheckedChange = { coroutineScope.launch { preferencesRepository.setShowGripStats(it) } })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    Text("End-of-Set Summary")
+                    Switch(checked = showSetReview, onCheckedChange = { coroutineScope.launch { preferencesRepository.setShowSetReview(it) } })
                 }
             }
 
-            // Feedback section
-            SettingsSection(title = "Feedback") {
-                SwitchPreference(
-                    title = "Haptic Feedback",
-                    checked = enableHaptics,
-                    onCheckedChange = { scope.launch { preferencesRepository.setEnableHaptics(it) } }
-                )
+            HorizontalDivider()
 
-                SwitchPreference(
-                    title = "Target Weight Sounds",
-                    checked = enableTargetSound,
-                    onCheckedChange = { scope.launch { preferencesRepository.setEnableTargetSound(it) } }
-                )
+            // --- BEHAVIOR ---
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Behavior & Targets", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
 
-                SwitchPreference(
-                    title = "Grip Statistics",
-                    checked = showGripStats,
-                    onCheckedChange = { scope.launch { preferencesRepository.setShowGripStats(it) } }
-                )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    Text("Enable Target Weight")
+                    Switch(checked = enableTargetWeight, onCheckedChange = { coroutineScope.launch { preferencesRepository.setEnableTargetWeight(it) } })
+                }
 
-                SwitchPreference(
-                    title = "End-of-Set Summary",
-                    checked = showSetReview,
-                    onCheckedChange = { scope.launch { preferencesRepository.setShowSetReview(it) } }
-                )
-            }
+                if (enableTargetWeight) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                        Text("Use Manual Target Weight")
+                        Switch(checked = useManualTarget, onCheckedChange = { coroutineScope.launch { preferencesRepository.setUseManualTarget(it) } })
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                        Text("Auto-set Target Weight")
+                        Switch(checked = autoSelectWeight, onCheckedChange = { coroutineScope.launch { preferencesRepository.setAutoSelectWeight(it) } })
+                    }
 
-
-
-            // Device section
-            SettingsSection(title = "Device") {
-                if (isConnected) {
-                    ListItem(
-                        headlineContent = { Text("Connected to") },
-                        trailingContent = {
-                            Text(
-                                text = connectedDeviceName ?: "Unknown",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    val unitLabel = if (useLbs) "lbs" else "kg"
+                    Text("Target Tolerance: ${String.format("%.1f", weightTolerance)} $unitLabel", style = MaterialTheme.typography.bodyMedium)
+                    Slider(
+                        value = weightTolerance.toFloat(),
+                        onValueChange = { coroutineScope.launch { preferencesRepository.setWeightTolerance(it.toDouble()) } },
+                        valueRange = 0.5f..5.0f,
+                        steps = 8
                     )
+                }
 
-                    ListItem(
-                        headlineContent = { Text("Disconnect") },
-                        leadingContent = {
-                            Icon(
-                                Icons.Default.BluetoothDisabled,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.error
-                            )
-                        },
-                        colors = ListItemDefaults.colors(
-                            headlineColor = MaterialTheme.colorScheme.error
-                        ),
-                        modifier = Modifier.clickableRow { onDisconnect() }
-                    )
-                } else {
-                    ListItem(
-                        headlineContent = { Text("Connect Device") },
-                        leadingContent = { Icon(Icons.Default.Bluetooth, contentDescription = null) },
-                        modifier = Modifier.clickableRow { onConnectDevice() }
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    Text("Auto-Calibrate on Connect")
+                    Switch(checked = enableCalibration, onCheckedChange = { coroutineScope.launch { preferencesRepository.setEnableCalibration(it) } })
                 }
             }
 
-            // Debug section
-            SettingsSection(title = "Debug") {
-                ListItem(
-                    headlineContent = { Text("View Debug Logs") },
-                    supportingContent = { Text("View and share diagnostic logs") },
-                    leadingContent = { Icon(Icons.Default.BugReport, contentDescription = null) },
-                    modifier = Modifier.clickableRow { onViewLogs() }
-                )
-            }
+            HorizontalDivider()
 
-            // Experimental section
-            SettingsSection(title = "Experimental") {
-                SwitchPreference(
-                    title = "Background Timer Sync",
-                    checked = backgroundTimeSync,
-                    onCheckedChange = { scope.launch { preferencesRepository.setBackgroundTimeSync(it) } }
-                )
+            // --- EXPERIMENTAL ---
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Experimental", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
 
-                Text(
-                    text = "Keeps the timer accurate when the app is in background.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp)
-                )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    Text("Background Timer Sync")
+                    Switch(checked = backgroundTimeSync, onCheckedChange = { coroutineScope.launch { preferencesRepository.setBackgroundTimeSync(it) } })
+                }
 
                 if (backgroundTimeSync) {
-                    SwitchPreference(
-                        title = "Background Notification",
-                        checked = enableLiveActivity,
-                        onCheckedChange = { scope.launch { preferencesRepository.setEnableLiveActivity(it) } }
-                    )
-
-                    Text(
-                        text = "Shows elapsed and remaining time in notification when backgrounded.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp)
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                        Text("Background Notification")
+                        Switch(checked = enableLiveActivity, onCheckedChange = { coroutineScope.launch { preferencesRepository.setEnableLiveActivity(it) } })
+                    }
                 }
 
-                SwitchPreference(
-                    title = "Auto-set Target Weight",
-                    checked = autoSelectWeight,
-                    onCheckedChange = { scope.launch { preferencesRepository.setAutoSelectWeight(it) } }
-                )
-
-                SwitchPreference(
-                    title = "Balrog Avoidance",
-                    checked = enableEndSessionOnEarlyFail,
-                    onCheckedChange = { scope.launch { preferencesRepository.setEnableEndSessionOnEarlyFail(it) } }
-                )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    Text("Balrog Avoidance (Early Fail)")
+                    Switch(checked = enableEndSessionOnEarlyFail, onCheckedChange = { coroutineScope.launch { preferencesRepository.setEnableEndSessionOnEarlyFail(it) } })
+                }
 
                 if (enableEndSessionOnEarlyFail) {
-                    StepperPreference(
-                        title = "Threshold",
-                        value = earlyFailThresholdPercent,
-                        valueFormat = { "${(it * 100).roundToInt()}%" },
-                        onIncrement = {
-                            val newValue = (earlyFailThresholdPercent + 0.05).coerceAtMost(AppConstants.MAX_EARLY_FAIL_THRESHOLD_PERCENT)
-                            scope.launch { preferencesRepository.setEarlyFailThresholdPercent(newValue) }
-                        },
-                        onDecrement = {
-                            val newValue = (earlyFailThresholdPercent - 0.05).coerceAtLeast(AppConstants.MIN_EARLY_FAIL_THRESHOLD_PERCENT)
-                            scope.launch { preferencesRepository.setEarlyFailThresholdPercent(newValue) }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                        Text("Fail Threshold: ${(earlyFailThresholdPercent * 100).roundToInt()}%")
+                        Row {
+                            IconButton(onClick = {
+                                val newVal = (earlyFailThresholdPercent - 0.05).coerceAtLeast(AppConstants.MIN_EARLY_FAIL_THRESHOLD_PERCENT)
+                                coroutineScope.launch { preferencesRepository.setEarlyFailThresholdPercent(newVal) }
+                            }) { Icon(Icons.Default.Remove, "Decrease") }
+                            IconButton(onClick = {
+                                val newVal = (earlyFailThresholdPercent + 0.05).coerceAtMost(AppConstants.MAX_EARLY_FAIL_THRESHOLD_PERCENT)
+                                coroutineScope.launch { preferencesRepository.setEarlyFailThresholdPercent(newVal) }
+                            }) { Icon(Icons.Default.Add, "Increase") }
                         }
-                    )
-
+                    }
                     Text(
                         text = "Abort session if grip fails before this % of target duration.",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
 
-            // Units section
-            SettingsSection(title = "Units") {
-                SegmentedButtonRow(
-                    options = listOf("kg", "lbs"),
-                    selectedIndex = if (useLbs) 1 else 0,
-                    onSelectionChanged = {
-                        scope.launch { preferencesRepository.setUseLbs(it == 1) }
+            HorizontalDivider()
+
+            // --- WEBSITE & HARDWARE COMMANDS ---
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("System Commands", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+
+                Button(onClick = { webViewBridge.reloadPage(); onDismiss() }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)) {
+                    Icon(Icons.Default.Refresh, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Refresh Website")
+                }
+
+                Button(onClick = { webViewBridge.clearWebsiteData(); onDismiss() }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) {
+                    Icon(Icons.Default.Delete, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Clear Website Data")
+                }
+
+                if (connectionState == ConnectionState.Connected) {
+                    Button(onClick = onRecalibrate, modifier = Modifier.fillMaxWidth()) {
+                        Text("Zero Progressor Scale")
                     }
-                )
+                }
             }
 
-            // Reset section
+            // --- RESET BUTTON ---
             Spacer(modifier = Modifier.height(16.dp))
-
             Button(
                 onClick = { showResetConfirmation = true },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer,
-                    contentColor = MaterialTheme.colorScheme.onErrorContainer
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Icon(Icons.Default.Refresh, contentDescription = null)
+                Icon(Icons.Default.Warning, null)
                 Spacer(modifier = Modifier.width(8.dp))
                 Text("Reset to Defaults")
             }
-
-            Text(
-                text = "Restores all settings to their recommended values.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-            )
-
             Spacer(modifier = Modifier.height(32.dp))
         }
-    }
 
-    // Reset confirmation dialog
-    if (showResetConfirmation) {
-        AlertDialog(
-            onDismissRequest = { showResetConfirmation = false },
-            title = { Text("Reset to Defaults") },
-            text = { Text("This will restore all settings to their recommended values.") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        scope.launch {
-                            preferencesRepository.resetToDefaults()
+        // --- RESET DIALOG ---
+        if (showResetConfirmation) {
+            AlertDialog(
+                onDismissRequest = { showResetConfirmation = false },
+                title = { Text("Reset to Defaults") },
+                text = { Text("This will restore all settings to their recommended values.") },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            coroutineScope.launch { preferencesRepository.resetToDefaults() }
+                            showResetConfirmation = false
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) { Text("Reset") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showResetConfirmation = false }) { Text("Cancel") }
+                }
+            )
+        }
+
+        // --- TENSION BOTTOM SHEET ---
+        if (showTensionSheet) {
+            ModalBottomSheet(onDismissRequest = { showTensionSheet = false }) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Select Tension Source", style = MaterialTheme.typography.titleLarge)
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    OutlinedCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.outlinedCardColors(containerColor = Color.Transparent)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Timer, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Basic Web Timer (Manual Weight)", style = MaterialTheme.typography.titleMedium)
+                            }
+                            OutlinedTextField(
+                                value = localManualWeight,
+                                onValueChange = {
+                                    localManualWeight = it
+                                    it.toDoubleOrNull()?.let { weight -> onWeightChange(weight) }
+                                },
+                                label = { Text("Target Weight") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                            )
                         }
-                        showResetConfirmation = false
                     }
-                ) {
-                    Text("Reset")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showResetConfirmation = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-}
 
-@Composable
-private fun SettingsSection(
-    title: String,
-    content: @Composable ColumnScope.() -> Unit
-) {
-    Column {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-        )
-        content()
-        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-    }
-}
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                        Text("Bluetooth Crane Scales", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                        if (connectionState == ConnectionState.Connected) {
+                            TextButton(onClick = { onDisconnect(); showTensionSheet = false }) { Text("Disconnect", color = MaterialTheme.colorScheme.error) }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
 
-@Composable
-private fun SwitchPreference(
-    title: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
-) {
-    ListItem(
-        headlineContent = { Text(title) },
-        trailingContent = {
-            Switch(
-                checked = checked,
-                onCheckedChange = onCheckedChange
-            )
-        }
-    )
-}
-
-@Composable
-private fun SliderPreference(
-    title: String,
-    value: Double,
-    valueRange: ClosedFloatingPointRange<Double>,
-    steps: Int,
-    valueFormat: (Double) -> String,
-    onValueChange: (Double) -> Unit
-) {
-    Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(title)
-            Text(
-                text = valueFormat(value),
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Slider(
-            value = value.toFloat(),
-            onValueChange = { onValueChange(it.toDouble()) },
-            valueRange = valueRange.start.toFloat()..valueRange.endInclusive.toFloat(),
-            steps = steps
-        )
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun SegmentedButtonRow(
-    options: List<String>,
-    selectedIndex: Int,
-    onSelectionChanged: (Int) -> Unit
-) {
-    SingleChoiceSegmentedButtonRow(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp)
-    ) {
-        options.forEachIndexed { index, option ->
-            SegmentedButton(
-                selected = index == selectedIndex,
-                onClick = { onSelectionChanged(index) },
-                shape = SegmentedButtonDefaults.itemShape(index, options.size)
-            ) {
-                Text(option)
-            }
-        }
-    }
-}
-
-@Composable
-private fun StepperPreference(
-    title: String,
-    value: Double,
-    valueFormat: (Double) -> String,
-    onIncrement: () -> Unit,
-    onDecrement: () -> Unit
-) {
-    ListItem(
-        headlineContent = { Text(title) },
-        trailingContent = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = valueFormat(value),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(end = 8.dp)
-                )
-                IconButton(onClick = onDecrement, modifier = Modifier.size(32.dp)) {
-                    Icon(Icons.Default.Remove, contentDescription = "Decrease")
-                }
-                IconButton(onClick = onIncrement, modifier = Modifier.size(32.dp)) {
-                    Icon(Icons.Default.Add, contentDescription = "Increase")
+                    if (discoveredDevices.isEmpty() && connectionState != ConnectionState.Connected) {
+                        CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally).padding(16.dp))
+                    } else {
+                        LazyColumn {
+                            items(discoveredDevices) { device ->
+                                @SuppressLint("MissingPermission")
+                                ListItem(
+                                    headlineContent = { Text(device.name ?: "Unknown Device") },
+                                    supportingContent = { Text(device.address) },
+                                    leadingContent = { Icon(Icons.Default.Bluetooth, contentDescription = null) },
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable {
+                                            bluetoothManager.connect(device)
+                                            showTensionSheet = false
+                                        }
+                                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(32.dp))
                 }
             }
         }
-    )
-}
 
-private fun Modifier.clickableRow(onClick: () -> Unit): Modifier {
-    return this.clickable(onClick = onClick)
+        // --- KINEMATICS BOTTOM SHEET ---
+        if (showKinematicsSheet) {
+            ModalBottomSheet(onDismissRequest = { showKinematicsSheet = false }) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Select Kinematics Source", style = MaterialTheme.typography.titleLarge)
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    ListItem(
+                        headlineContent = { Text("Phone Accelerometer") },
+                        supportingContent = { Text("Uses internal gravity sensors. Requires phone strapped to body.") },
+                        leadingContent = { Icon(Icons.Default.Smartphone, contentDescription = null) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                onKinematicsChange(KinematicsSource.PHONE)
+                                showKinematicsSheet = false
+                            }
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    ListItem(
+                        headlineContent = { Text("M5StickC Plus 2") },
+                        supportingContent = { Text("External Bluetooth IMU. Straps directly to the body.") },
+                        leadingContent = { Icon(Icons.Default.Watch, contentDescription = null) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                onKinematicsChange(KinematicsSource.M5STICK)
+                                showKinematicsSheet = false
+                            }
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                    )
+                    Spacer(modifier = Modifier.height(32.dp))
+                }
+            }
+        }
+    }
 }

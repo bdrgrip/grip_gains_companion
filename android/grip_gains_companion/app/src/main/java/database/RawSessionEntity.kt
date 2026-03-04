@@ -5,7 +5,8 @@ import androidx.room.PrimaryKey
 
 @Entity(tableName = "raw_sessions")
 data class RawSessionEntity(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    @PrimaryKey(autoGenerate = true)
+    val id: Long = 0,
     val timestamp: Long,
     val targetMuscle: String,
     val bodySide: String,
@@ -17,7 +18,7 @@ data class RawSessionEntity(
     val tensionSeries: List<Double>,
     val magnitudeSeries: List<Double>,
     val powerSeries: List<Double>,
-    val fluxSeries: List<Double>,
+    val densitySeries: List<Double>,
     val workSeries: List<Double>
 )
 

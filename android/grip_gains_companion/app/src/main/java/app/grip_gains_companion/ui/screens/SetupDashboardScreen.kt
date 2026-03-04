@@ -68,13 +68,11 @@ fun SetupDashboardScreen(
                 },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp)
-                    .height(56.dp),
-                shape = RoundedCornerShape(12.dp)
+                    .padding(horizontal = 16.dp)
+                    .navigationBarsPadding() // <--- Pushes it above the system swipe area
+                    .padding(bottom = 24.dp) // <--- Adds the visual buffer you requested
             ) {
                 Text("Open Grip Gains", style = MaterialTheme.typography.titleMedium)
-                Spacer(modifier = Modifier.width(8.dp))
-                Icon(Icons.Default.ArrowForward, contentDescription = null)
             }
         }
     ) { paddingValues ->
