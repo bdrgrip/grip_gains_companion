@@ -8,7 +8,7 @@ import androidx.room.TypeConverters
 
 @Database(
     entities = [RawSessionEntity::class],
-    version = 2, // Increment from 1 to 2
+    version = 7,
     exportSchema = false
 )
 @TypeConverters(Converters::class) // Add this line
@@ -21,15 +21,14 @@ abstract class AppDatabase : RoomDatabase() {
 
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
-                val instance = Room.databaseBuilder(
+                Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
-                    "raw_sessions.db"
+                    "grip_gains_database"
                 )
-                    .fallbackToDestructiveMigration() // Wipes dev data to apply new schema
+                    .fallbackToDestructiveMigration() // Add this line
                     .build()
-                INSTANCE = instance
-                instance
+                    .also { INSTANCE = it }
             }
         }
     }

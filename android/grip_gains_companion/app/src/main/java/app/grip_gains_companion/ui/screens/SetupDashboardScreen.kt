@@ -1,12 +1,10 @@
 package app.grip_gains_companion.ui.screens
 
 import android.annotation.SuppressLint
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -14,28 +12,29 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.grip_gains_companion.data.PreferencesRepository
 import app.grip_gains_companion.model.ConnectionState
+import app.grip_gains_companion.model.KinematicsSource
+import app.grip_gains_companion.model.TensionSource
 import app.grip_gains_companion.service.ble.BluetoothManager
-
-enum class KinematicsSource { PHONE, M5STICK }
-enum class TensionSource { BLE_SCALE, MANUAL }
+import app.grip_gains_companion.ui.components.DataSourceCard
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SetupDashboardScreen(
+    preferencesRepository: PreferencesRepository,
     bluetoothManager: BluetoothManager,
     onStartTraining: (TensionSource, Double, KinematicsSource) -> Unit
 ) {
     val connectionState by bluetoothManager.connectionState.collectAsStateWithLifecycle()
     val connectedDeviceName by bluetoothManager.connectedDeviceName.collectAsStateWithLifecycle()
     val discoveredDevices by bluetoothManager.discoveredDevices.collectAsStateWithLifecycle()
+    val useLbs by preferencesRepository.useLbs.collectAsStateWithLifecycle(initialValue = false)
 
     // Dashboard State
     var tensionSource by remember { mutableStateOf(TensionSource.MANUAL) }
@@ -69,8 +68,8 @@ fun SetupDashboardScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
-                    .navigationBarsPadding() // <--- Pushes it above the system swipe area
-                    .padding(bottom = 24.dp) // <--- Adds the visual buffer you requested
+                    .navigationBarsPadding()
+                    .padding(bottom = 24.dp)
             ) {
                 Text("Open Grip Gains", style = MaterialTheme.typography.titleMedium)
             }
@@ -87,17 +86,29 @@ fun SetupDashboardScreen(
             DataSourceCard(
                 title = "Tension Data",
                 icon = Icons.Default.FitnessCenter,
-                activeSource = if (tensionSource == TensionSource.BLE_SCALE && connectionState == ConnectionState.Connected) {
+                activeSource = if (connectionState == ConnectionState.Connected) {
                     connectedDeviceName ?: "Bluetooth Scale"
                 } else {
-                    "Basic Timer ($manualWeight lbs)"
+                    "[No Device]"
                 },
-                statusColor = if (tensionSource == TensionSource.BLE_SCALE && connectionState == ConnectionState.Connected) Color.Green else Color.LightGray,
+                statusColor = if (connectionState == ConnectionState.Connected) Color.Green else Color.LightGray,
                 onClick = {
                     bluetoothManager.startScanning()
                     showTensionSheet = true
                 }
             )
+
+            // MANUAL WEIGHT INPUT: Shows only if No Device is connected
+            if (connectionState != ConnectionState.Connected) {
+                OutlinedTextField(
+                    value = manualWeight,
+                    onValueChange = { manualWeight = it },
+                    label = { Text("Manual Weight Target (${if (useLbs) "lbs" else "kg"})") },
+                    placeholder = { Text("20.0") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
             // KINEMATICS DATA SOURCE CARD
             DataSourceCard(
@@ -117,39 +128,15 @@ fun SetupDashboardScreen(
                 Text("Select Tension Source", style = MaterialTheme.typography.titleLarge)
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Manual Input Option
-                OutlinedCard(
-                    modifier = Modifier.fillMaxWidth().clickable {
-                        tensionSource = TensionSource.MANUAL
-                        showTensionSheet = false
-                    },
-                    colors = CardDefaults.outlinedCardColors(
-                        containerColor = if (tensionSource == TensionSource.MANUAL) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
-                    )
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Timer, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Basic Web Timer (Manual Weight)", style = MaterialTheme.typography.titleMedium)
-                        }
-                        if (tensionSource == TensionSource.MANUAL) {
-                            OutlinedTextField(
-                                value = manualWeight,
-                                onValueChange = { manualWeight = it },
-                                label = { Text("Target Weight") },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-                            )
-                        }
+                Text("Bluetooth Crane Scales", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                if (connectionState == ConnectionState.Connected) {
+                    TextButton(onClick = { bluetoothManager.disconnect(); tensionSource = TensionSource.MANUAL }) {
+                        Text("Disconnect Current Device", color = MaterialTheme.colorScheme.error)
                     }
                 }
-
-                Spacer(modifier = Modifier.height(16.dp))
-                Text("Bluetooth Crane Scales", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                 Spacer(modifier = Modifier.height(8.dp))
 
-                if (discoveredDevices.isEmpty()) {
+                if (discoveredDevices.isEmpty() && connectionState != ConnectionState.Connected) {
                     CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally).padding(16.dp))
                 } else {
                     LazyColumn {
@@ -178,7 +165,7 @@ fun SetupDashboardScreen(
 
                 ListItem(
                     headlineContent = { Text("Phone Accelerometer") },
-                    supportingContent = { Text("Uses internal gravity sensors. Requires phone strapped to body.") },
+                    supportingContent = { Text("Uses internal gravity sensors.") },
                     leadingContent = { Icon(Icons.Default.Smartphone, contentDescription = null) },
                     modifier = Modifier.clickable {
                         kinematicsSource = KinematicsSource.PHONE
@@ -188,7 +175,7 @@ fun SetupDashboardScreen(
                 HorizontalDivider()
                 ListItem(
                     headlineContent = { Text("M5StickC Plus 2") },
-                    supportingContent = { Text("External Bluetooth IMU. Straps directly to the body.") },
+                    supportingContent = { Text("External Bluetooth IMU.") },
                     leadingContent = { Icon(Icons.Default.Watch, contentDescription = null) },
                     modifier = Modifier.clickable {
                         kinematicsSource = KinematicsSource.M5STICK
@@ -197,41 +184,6 @@ fun SetupDashboardScreen(
                 )
                 Spacer(modifier = Modifier.height(32.dp))
             }
-        }
-    }
-}
-
-@Composable
-fun DataSourceCard(
-    title: String,
-    icon: ImageVector,
-    activeSource: String,
-    statusColor: Color,
-    onClick: () -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth().clickable { onClick() },
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp).fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                }
-                Spacer(modifier = Modifier.width(16.dp))
-                Column {
-                    Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(activeSource, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                }
-            }
-            Box(modifier = Modifier.size(12.dp).clip(RoundedCornerShape(6.dp)).background(statusColor))
         }
     }
 }

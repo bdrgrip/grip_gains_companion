@@ -18,6 +18,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.grip_gains_companion.service.SessionResult
 import app.grip_gains_companion.ui.components.RawLineChart
+import app.grip_gains_companion.ui.components.RepMarkersOverlay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -38,6 +39,8 @@ fun RawSummaryScreen(
     val secondaryColor = MaterialTheme.colorScheme.secondary
     val tertiaryColor = MaterialTheme.colorScheme.tertiary
     val errorColor = MaterialTheme.colorScheme.error
+
+    val timeUnderTension = result.timeUnderTension
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("Session Complete", fontWeight = FontWeight.Bold) }) },
@@ -64,17 +67,34 @@ fun RawSummaryScreen(
             modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp).verticalScroll(scrollState),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                Card(modifier = Modifier.padding(8.dp)) {
-                    Column(modifier = Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Work", style = MaterialTheme.typography.labelMedium)
-                        Text(result.mechanicalWork.toInt().toString(), style = MaterialTheme.typography.titleLarge, color = primaryColor)
-                    }
-                }
-                Card(modifier = Modifier.padding(8.dp)) {
-                    Column(modifier = Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Score", style = MaterialTheme.typography.labelMedium)
-                        Text(result.workoutScore.toInt().toString(), style = MaterialTheme.typography.titleLarge, color = primaryColor)
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("Workout Score", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    Text(
+                        text = result.workoutScore.toInt().toString(),
+                        style = MaterialTheme.typography.displayLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        MetricItem("TUT", "${String.format("%.1f", timeUnderTension)}s")
+                        MetricItem("Work", "${result.mechanicalWork.toInt()}")
+                        if (result.repTimestamps.size > 1) {
+                            MetricItem("Cadence", "${String.format("%.1f", result.averageRepInterval)}s")
+                        }
+                        MetricItem("Reps", "${result.repTimestamps.size}")
                     }
                 }
             }
@@ -99,15 +119,37 @@ fun RawSummaryScreen(
             }
 
             SummaryGraphCard(title = "Tension & Magnitude", legends = listOf("Tension" to primaryColor, "Magnitude" to tertiaryColor)) {
-                RawLineChart(times = result.timeSeries, primary = result.tensionSeries, secondary = result.magnitudeSeries, pColor = primaryColor, sColor = tertiaryColor)
+                Box(modifier = Modifier.fillMaxWidth().height(200.dp)) {
+                    // Overlay goes first to sit behind the line chart
+                    RepMarkersOverlay(
+                        repTimestamps = result.repTimestamps,
+                        minTime = result.timeSeries.firstOrNull() ?: 0.0,
+                        maxTime = result.timeSeries.lastOrNull() ?: 0.0
+                    )
+                    RawLineChart(
+                        times = result.timeSeries,
+                        primary = result.tensionSeries,
+                        secondary = result.magnitudeSeries,
+                        restDurations = result.restDurations, // YOU MUST ADD THIS LINE TO ALL 3 CHARTS
+                        pColor = primaryColor,
+                        sColor = tertiaryColor
+                    )                }
             }
 
             SummaryGraphCard(title = "3s Density & Inst. Power", legends = listOf("Density" to errorColor, "Power" to secondaryColor)) {
-                RawLineChart(times = result.timeSeries, primary = result.densitySeries, secondary = result.powerSeries, pColor = errorColor, sColor = secondaryColor)
+                Box(modifier = Modifier.fillMaxWidth().height(200.dp)) {
+                    RepMarkersOverlay(
+                        repTimestamps = result.repTimestamps,
+                        minTime = result.timeSeries.firstOrNull() ?: 0.0,
+                        maxTime = result.timeSeries.lastOrNull() ?: 0.0
+                    )
+                    RawLineChart(result.timeSeries, result.densitySeries, result.powerSeries, result.restDurations, errorColor, secondaryColor)
+                                    }
             }
 
             SummaryGraphCard(title = "Accumulated Mechanical Work", legends = emptyList()) {
-                RawLineChart(times = result.timeSeries, primary = result.workSeries, secondary = null, pColor = primaryColor, connectGaps = true)
+                Box(modifier = Modifier.fillMaxWidth().height(200.dp)) {
+                    RawLineChart(result.timeSeries, result.workSeries, null, result.restDurations, primaryColor, Color.Gray, true)                }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -127,6 +169,22 @@ fun RawSummaryScreen(
     }
 }
 
+@Composable
+fun MetricItem(label: String, value: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            text = value,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onPrimaryContainer // Strong Contrast
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f) // Visible but secondary
+        )
+    }
+}
 @Composable
 private fun SummarySideButton(label: String, current: String, modifier: Modifier = Modifier, onSelect: (String) -> Unit) {
     val isSelected = label == current

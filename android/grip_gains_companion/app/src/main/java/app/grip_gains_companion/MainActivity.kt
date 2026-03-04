@@ -47,6 +47,8 @@ import app.grip_gains_companion.ui.theme.GripGainsTheme
 import app.grip_gains_companion.util.HapticManager
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import app.grip_gains_companion.model.KinematicsSource
+import app.grip_gains_companion.model.TensionSource
 
 class MainActivity : ComponentActivity() {
 
@@ -140,6 +142,9 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val navController = rememberNavController()
+            var showWeightPrompt by remember { mutableStateOf(false) }
+            var weightInputText by remember { mutableStateOf(currentManualWeight.toString()) }
+
             val connectionState by bluetoothManager.connectionState.collectAsState()
             val isConnected = connectionState == ConnectionState.Connected
 
@@ -154,12 +159,6 @@ class MainActivity : ComponentActivity() {
             val weightTolerance by preferencesRepository.weightTolerance.collectAsState(initial = 0.5)
             val enableHaptics by preferencesRepository.enableHaptics.collectAsState(initial = true)
             val enableCalibration by preferencesRepository.enableCalibration.collectAsState(initial = true)
-
-            val currentWebWeight by webViewBridge.targetWeight.collectAsState()
-            val isBasicTimer = currentWebWeight == null || currentWebWeight == 0.0
-
-            var showWeightPrompt by remember { mutableStateOf(false) }
-            var weightInputText by remember { mutableStateOf(currentManualWeight.toString()) }
 
             LaunchedEffect(enableCalibration) { progressorHandler.enableCalibration = enableCalibration }
             LaunchedEffect(connectionState) {
@@ -185,10 +184,12 @@ class MainActivity : ComponentActivity() {
                     ) {
                         composable("setup") {
                             SetupDashboardScreen(
+                                preferencesRepository = preferencesRepository, // Added this parameter
                                 bluetoothManager = bluetoothManager,
-                                onStartTraining = { _, weight, kinematicsSrc ->
+                                onStartTraining = { source, weight, kinematicsSrc -> // Named the first parameter 'source'
                                     currentManualWeight = weight
                                     activeKinematicsSource = kinematicsSrc
+                                    // You can use 'source' here if you need to trigger specific BLE logic for the scale
                                     navController.navigate("main") { popUpTo(0) }
                                 }
                             )
@@ -214,23 +215,43 @@ class MainActivity : ComponentActivity() {
                                     useLbs = useLbs,
                                     enableTargetWeight = enableTargetWeight,
                                     useManualTarget = useManualTarget,
-                                    manualTargetWeight = manualTargetWeight,
+                                    manualTargetWeight = currentManualWeight, // Use the fast local state here
                                     weightTolerance = weightTolerance,
                                     onSettingsTap = { navController.navigate("settings") },
                                     onHistoryTap = { navController.navigate("history") },
-                                    onUnitToggle = { lifecycleScope.launch { preferencesRepository.setUseLbs(!useLbs) } }
+                                    onUnitToggle = { lifecycleScope.launch { preferencesRepository.setUseLbs(!useLbs) } },
+                                    onSetManualWeightTap = {
+                                        weightInputText = currentManualWeight.toString()
+                                        showWeightPrompt = true
+                                    }
                                 )
 
-                                if (!isConnected && isBasicTimer) {
-                                    ExtendedFloatingActionButton(
-                                        onClick = {
-                                            weightInputText = currentManualWeight.toString()
-                                            showWeightPrompt = true
+                                if (showWeightPrompt) {
+                                    AlertDialog(
+                                        onDismissRequest = { showWeightPrompt = false },
+                                        title = { Text("Set Basic Timer Weight") },
+                                        text = {
+                                            OutlinedTextField(
+                                                value = weightInputText,
+                                                onValueChange = { weightInputText = it },
+                                                label = { Text(if (useLbs) "Weight (lbs)" else "Weight (kg)") },
+                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                                            )
                                         },
-                                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp)
-                                    ) {
-                                        Text("Basic Timer Weight: $currentManualWeight")
-                                    }
+                                        confirmButton = {
+                                            Button(onClick = {
+                                                weightInputText.toDoubleOrNull()?.let { newWeight ->
+                                                    currentManualWeight = newWeight
+                                                    // Force the DataStore to update in the background
+                                                    lifecycleScope.launch { preferencesRepository.setManualTargetWeight(newWeight) }
+                                                }
+                                                showWeightPrompt = false
+                                            }) { Text("Save") }
+                                        },
+                                        dismissButton = {
+                                            TextButton(onClick = { showWeightPrompt = false }) { Text("Cancel") }
+                                        }
+                                    )
                                 }
                             }
                         }
@@ -286,29 +307,6 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // Dialogs
-                    if (showWeightPrompt) {
-                        AlertDialog(
-                            onDismissRequest = { showWeightPrompt = false },
-                            title = { Text("Target Weight") },
-                            text = {
-                                OutlinedTextField(
-                                    value = weightInputText,
-                                    onValueChange = { weightInputText = it },
-                                    label = { Text(if (useLbs) "Weight (lbs)" else "Weight (kg)") },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                                )
-                            },
-                            confirmButton = {
-                                Button(onClick = {
-                                    weightInputText.toDoubleOrNull()?.let { currentManualWeight = it }
-                                    showWeightPrompt = false
-                                }) { Text("Set") }
-                            },
-                            dismissButton = { TextButton(onClick = { showWeightPrompt = false }) { Text("Cancel") } }
-                        )
-                    }
-
                     finishedSessionData?.let { result ->
                         RawSummaryScreen(
                             result = result,
@@ -320,14 +318,18 @@ class MainActivity : ComponentActivity() {
                                         targetMuscle = muscle,
                                         bodySide = side,
                                         mechanicalWork = result.mechanicalWork,
+                                        workoutScore = result.workoutScore,
                                         targetWeight = currentManualWeight,
-                                        durationSeconds = if (result.timeSeries.isNotEmpty()) result.timeSeries.last() else 0.0,
+                                        durationSeconds = result.timeUnderTension,
                                         timeSeries = result.timeSeries,
                                         tensionSeries = result.tensionSeries,
                                         magnitudeSeries = result.magnitudeSeries,
                                         powerSeries = result.powerSeries,
                                         densitySeries = result.densitySeries,
-                                        workSeries = result.workSeries
+                                        workSeries = result.workSeries,
+                                        repTimestamps = result.repTimestamps,
+                                        averageRepInterval = result.averageRepInterval,
+                                        restDurations = result.restDurations
                                     )
                                     rawRepository.insert(entity)
                                     finishedSessionData = null

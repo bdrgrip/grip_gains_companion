@@ -12,7 +12,11 @@ data class SessionResult(
     val magnitudeSeries: List<Double>,
     val powerSeries: List<Double>,
     val densitySeries: List<Double>,
-    val workSeries: List<Double>
+    val workSeries: List<Double>,
+    val repTimestamps: List<Double>,
+    val averageRepInterval: Double,
+    val timeUnderTension: Double,
+    val restDurations: List<Double>
 )
 
 class AdaptiveAxisProjector {
@@ -53,7 +57,6 @@ class RawSessionManager {
     private val leakFactor = 0.95
     private var velocity = 0.0
     private var position = 0.0
-
     private val holds = mutableListOf<RawHoldBuffer>()
     var isHoldActive = false
         private set
@@ -66,21 +69,17 @@ class RawSessionManager {
     fun addSample(x: Float, y: Float, z: Float, tension: Double, timestampNanos: Long) {
         if (!isHoldActive || holds.isEmpty()) return
         val currentHold = holds.last()
-
         if (currentHold.lastTimestamp == 0L) {
             currentHold.firstTimestamp = timestampNanos
             currentHold.lastTimestamp = timestampNanos
             return
         }
-
         val dt = (timestampNanos - currentHold.lastTimestamp) / 1_000_000_000.0
         if (dt <= 0) return
         currentHold.lastTimestamp = timestampNanos
-
         val accel1D = projector.projectTo1D(x, y, z)
         velocity = (velocity + accel1D * dt) * leakFactor
         position = (position + velocity * dt) * leakFactor
-
         currentHold.velocities.add(abs(velocity))
         currentHold.tensions.add(tension)
         currentHold.positions.add(position)
@@ -100,11 +99,12 @@ class RawSessionManager {
     }
 
     fun finalizeSession(): SessionResult {
-        if (holds.isEmpty()) return SessionResult(0.0, 0.0, emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList())
+        if (holds.isEmpty()) return SessionResult(0.0, 0.0, emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), 0.0, 0.0, emptyList())
 
         var totalWork = 0.0
         var totalScore = 0.0
-
+        var totalTUT = 0.0
+        val restDurations = mutableListOf<Double>()
         val timeSeries = mutableListOf<Double>()
         val tensionSeries = mutableListOf<Double>()
         val magnitudeSeries = mutableListOf<Double>()
@@ -114,36 +114,29 @@ class RawSessionManager {
 
         var globalTimeOffset = 0.0
         var fatigueCarryover = 0.0
-        var holdIndex = 1
 
         holds.forEachIndexed { index, hold ->
             if (hold.timestamps.isEmpty()) return@forEachIndexed
-
             val holdDuration = (hold.timestamps.last() - hold.timestamps.first()) / 1_000_000_000.0
+            totalTUT += holdDuration
 
             if (index > 0) {
                 val restNanos = hold.firstTimestamp - holds[index-1].lastTimestamp
                 val restSeconds = max(0.0, restNanos / 1_000_000_000.0)
-                val prevDuration = (holds[index-1].lastTimestamp - holds[index-1].firstTimestamp) / 1_000_000_000.0
-                fatigueCarryover = prevDuration * Math.exp(-0.04 * restSeconds)
+                restDurations.add(restSeconds)
+                fatigueCarryover = ((holds[index-1].lastTimestamp - holds[index-1].firstTimestamp) / 1_000_000_000.0) * Math.exp(-0.04 * restSeconds)
             }
 
-            val yieldModifier = Math.exp(-0.51 * (holdIndex - 1))
+            val yieldModifier = Math.exp(-0.51 * index)
             val t0 = hold.timestamps.first()
-            var holdScore = 0.0
 
-            for (i in 1 until hold.velocities.size) {
-                val dt = (hold.timestamps[i] - hold.timestamps[i-1]) / 1_000_000_000.0
+            for (i in 0 until hold.velocities.size) {
+                val dt = if (i == 0) 0.0 else (hold.timestamps[i] - hold.timestamps[i-1]) / 1_000_000_000.0
                 val t = (hold.timestamps[i] - t0) / 1_000_000_000.0
-                val effectiveTime = t + fatigueCarryover
-
                 val instPower = hold.tensions[i] * hold.velocities[i]
                 val stepWork = (instPower / hold.maxStroke) * dt
                 totalWork += stepWork
-
-                val workScore = stepWork * (1.0 + 0.1 * effectiveTime)
-                val tensionScore = hold.tensions[i] * dt * 0.005 * totalWork
-                holdScore += (workScore + tensionScore) * yieldModifier
+                totalScore += (stepWork * (1.0 + 0.1 * (t + fatigueCarryover)) + hold.tensions[i] * dt * 0.005 * totalWork) * yieldModifier
 
                 val globalTime = globalTimeOffset + t
                 timeSeries.add(globalTime)
@@ -152,96 +145,66 @@ class RawSessionManager {
                 powerSeries.add(instPower)
                 workSeries.add(totalWork)
 
-                val currentIndex = powerSeries.size - 1
                 val windowStartTime = globalTime - 3.0
-                var powerSum = 0.0
-                var powerCount = 0
-
-                for (j in currentIndex downTo 0) {
+                var pSum = 0.0; var pCount = 0
+                for (j in powerSeries.size - 1 downTo 0) {
                     if (timeSeries[j] >= windowStartTime) {
-                        if (!powerSeries[j].isNaN()) {
-                            powerSum += powerSeries[j]
-                            powerCount++
-                        }
-                    } else {
-                        break
-                    }
+                        if (!powerSeries[j].isNaN()) { pSum += powerSeries[j]; pCount++ }
+                    } else break
                 }
-
-                val density = if (powerCount > 0) powerSum / powerCount else 0.0
-                densitySeries.add(density)
+                densitySeries.add(if (pCount > 0) pSum / pCount else 0.0)
             }
-
-            totalScore += holdScore
             globalTimeOffset += holdDuration
-
             if (index < holds.size - 1) {
-                val restNanos = holds[index+1].firstTimestamp - hold.lastTimestamp
-                val restSeconds = max(0.0, restNanos / 1_000_000_000.0)
-                globalTimeOffset += restSeconds
-
+                globalTimeOffset += 1.0
                 timeSeries.add(globalTimeOffset)
-                tensionSeries.add(Double.NaN)
-                magnitudeSeries.add(Double.NaN)
-                powerSeries.add(Double.NaN)
-                densitySeries.add(Double.NaN)
+                tensionSeries.add(Double.NaN); magnitudeSeries.add(Double.NaN)
+                powerSeries.add(Double.NaN); densitySeries.add(Double.NaN)
                 workSeries.add(totalWork)
             }
-            holdIndex++
         }
 
-        val decimationFactor = 10
-
-        val dTimes = mutableListOf<Double>()
-        val dTensions = mutableListOf<Double>()
-        val dMags = mutableListOf<Double>()
-        val dPowers = mutableListOf<Double>()
-        val dDensities = mutableListOf<Double>()
-        val dWorks = mutableListOf<Double>()
-
-        var i = 0
-        while (i < timeSeries.size) {
-            if (timeSeries[i].isNaN() || tensionSeries[i].isNaN()) {
-                dTimes.add(timeSeries[i])
-                dTensions.add(Double.NaN)
-                dMags.add(Double.NaN)
-                dPowers.add(Double.NaN)
-                dDensities.add(Double.NaN)
-                dWorks.add(workSeries[i])
-                i++
-                continue
+        val validMags = magnitudeSeries.filter { !it.isNaN() }
+        val threshold = (if (validMags.isNotEmpty()) validMags.maxOrNull() ?: 0.0 else 0.0) * 0.20
+        val rawPeaks = mutableListOf<Double>()
+        var lastPeakTime = -Double.MAX_VALUE
+        for (i in 1 until magnitudeSeries.size - 1) {
+            val m = magnitudeSeries[i]
+            if (m.isNaN()) continue
+            if (m >= threshold && m > (magnitudeSeries[i-1].takeIf { !it.isNaN() } ?: 0.0) && m > (magnitudeSeries[i+1].takeIf { !it.isNaN() } ?: 0.0)) {
+                if (timeSeries[i] - lastPeakTime > 0.25 && !(magnitudeSeries.getOrNull(i+1)?.isNaN() ?: true)) {
+                    rawPeaks.add(timeSeries[i]); lastPeakTime = timeSeries[i]
+                }
             }
+        }
+        val repTimestamps = rawPeaks.filterIndexed { idx, _ -> idx % 2 == 0 }
+        val avgInterval = if (repTimestamps.size > 1) repTimestamps.zipWithNext { a, b -> b - a }.average() else 0.0
 
-            var count = 0
-            var sumTension = 0.0
-            var sumMag = 0.0
-            var sumPower = 0.0
-            var sumDensity = 0.0
-
-            val chunkEnd = kotlin.math.min(i + decimationFactor, timeSeries.size)
-            var lastValidIndex = i
-
-            while (i < chunkEnd && !timeSeries[i].isNaN() && !tensionSeries[i].isNaN()) {
-                sumTension += tensionSeries[i]
-                sumMag += magnitudeSeries[i]
-                sumPower += powerSeries[i]
-                sumDensity += densitySeries[i]
-                lastValidIndex = i
-                count++
-                i++
+        val decimation = 10
+        val dTimes = mutableListOf<Double>(); val dTensions = mutableListOf<Double>()
+        val dMags = mutableListOf<Double>(); val dPowers = mutableListOf<Double>()
+        val dDensities = mutableListOf<Double>(); val dWorks = mutableListOf<Double>()
+        var k = 0
+        while (k < timeSeries.size) {
+            if (timeSeries[k].isNaN()) {
+                dTimes.add(timeSeries[k]); dTensions.add(Double.NaN); dMags.add(Double.NaN)
+                dPowers.add(Double.NaN); dDensities.add(Double.NaN); dWorks.add(workSeries[k])
+                k++; continue
             }
-
+            var count = 0; var sT = 0.0; var sM = 0.0; var sP = 0.0; var sD = 0.0
+            val end = kotlin.math.min(k + decimation, timeSeries.size)
+            var lastV = k
+            while (k < end && !timeSeries[k].isNaN()) {
+                sT += tensionSeries[k]; sM += magnitudeSeries[k]; sP += powerSeries[k]
+                sD += densitySeries[k]; lastV = k; count++; k++
+            }
             if (count > 0) {
-                dTimes.add(timeSeries[lastValidIndex])
-                dWorks.add(workSeries[lastValidIndex])
-
-                dTensions.add(sumTension / count)
-                dMags.add(sumMag / count)
-                dPowers.add(sumPower / count)
-                dDensities.add(sumDensity / count)
+                dTimes.add(timeSeries[lastV]); dWorks.add(workSeries[lastV])
+                dTensions.add(sT / count); dMags.add(sM / count)
+                dPowers.add(sP / count); dDensities.add(sD / count)
             }
         }
 
-        return SessionResult(totalWork, totalScore, dTimes, dTensions, dMags, dPowers, dDensities, dWorks)
+        return SessionResult(totalScore, totalWork, dTimes, dTensions, dMags, dPowers, dDensities, dWorks, repTimestamps, avgInterval, totalTUT, restDurations)
     }
 }

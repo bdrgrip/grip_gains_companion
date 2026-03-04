@@ -71,7 +71,7 @@ object AppConstants {
     const val MAX_EARLY_FAIL_THRESHOLD_PERCENT = 0.90      // 90%
 
     // MARK: - Web
-    const val GRIP_GAINS_URL = "https://gripgains.ca/timer"
+    const val GRIP_GAINS_URL = "https://gripgains.ca"
 
     // MARK: - Tindeq Progressor BLE UUIDs
     val PROGRESSOR_SERVICE_UUID: UUID = UUID.fromString("7E4E1701-1EA6-40C9-9DCC-13D34FFEAD57")

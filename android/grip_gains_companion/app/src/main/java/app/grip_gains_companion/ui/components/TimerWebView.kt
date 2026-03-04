@@ -71,7 +71,25 @@ fun TimerWebView(
                     view?.evaluateJavascript(JavaScriptBridge.settingsVisibilityObserverScript, null)
                     view?.evaluateJavascript(JavaScriptBridge.saveButtonObserverScript, null)
 
-                    pageLoaded = true // Trigger the fade-in animation
+                    webViewBridge.updateHistoryState(view?.canGoBack() == true, view?.canGoForward() == true)
+                    webViewBridge.updateUrl(url)
+                    pageLoaded = true
+                }
+
+                override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+                    super.doUpdateVisitedHistory(view, url, isReload)
+                    webViewBridge.updateHistoryState(view?.canGoBack() == true, view?.canGoForward() == true)
+                    webViewBridge.updateUrl(url)
+                }
+            }
+
+            // Listen for native scroll to hide/show toolbar
+            setOnScrollChangeListener { _, _, scrollY, _, oldScrollY ->
+                val dy = scrollY - oldScrollY
+                if (dy > 15 && webViewBridge.isToolbarVisible.value) {
+                    webViewBridge.setToolbarVisible(false)
+                } else if (dy < -15 && !webViewBridge.isToolbarVisible.value) {
+                    webViewBridge.setToolbarVisible(true)
                 }
             }
 

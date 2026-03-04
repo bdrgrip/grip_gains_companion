@@ -11,6 +11,7 @@ data class RawSessionEntity(
     val targetMuscle: String,
     val bodySide: String,
     val mechanicalWork: Double,
+    val workoutScore: Double = 0.0,
     val targetWeight: Double,
     val durationSeconds: Double,
 
@@ -19,7 +20,10 @@ data class RawSessionEntity(
     val magnitudeSeries: List<Double>,
     val powerSeries: List<Double>,
     val densitySeries: List<Double>,
-    val workSeries: List<Double>
+    val workSeries: List<Double>,
+    val repTimestamps: List<Double> = emptyList(),
+    val averageRepInterval: Double = 0.0,
+    val restDurations: List<Double> = emptyList()
 )
 
 fun RawSessionEntity.calculateRetroactiveScore(): Double {

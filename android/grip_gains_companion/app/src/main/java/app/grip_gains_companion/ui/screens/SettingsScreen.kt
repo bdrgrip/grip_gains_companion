@@ -18,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -25,11 +26,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.grip_gains_companion.config.AppConstants
 import app.grip_gains_companion.data.PreferencesRepository
 import app.grip_gains_companion.model.ConnectionState
+import app.grip_gains_companion.model.KinematicsSource
 import app.grip_gains_companion.service.ble.BluetoothManager
 import app.grip_gains_companion.service.web.WebViewBridge
-import app.grip_gains_companion.util.WeightFormatter
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+import app.grip_gains_companion.ui.components.DataSourceCard
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,7 +52,6 @@ fun SettingsScreen(
 ) {
     val coroutineScope = rememberCoroutineScope()
 
-    // 1. Collect all preferences
     val useLbs by preferencesRepository.useLbs.collectAsStateWithLifecycle(initialValue = false)
     val showStatusBar by preferencesRepository.showStatusBar.collectAsStateWithLifecycle(initialValue = true)
     val expandedForceBar by preferencesRepository.expandedForceBar.collectAsStateWithLifecycle(initialValue = true)
@@ -110,7 +111,7 @@ fun SettingsScreen(
                     activeSource = if (connectionState == ConnectionState.Connected) {
                         connectedDeviceName ?: "Bluetooth Scale"
                     } else {
-                        "Basic Timer ($localManualWeight)"
+                        "[No Device]" // Clear indicator that no hardware is tethered
                     },
                     statusColor = if (connectionState == ConnectionState.Connected) Color.Green else Color.LightGray,
                     onClick = {
@@ -118,6 +119,21 @@ fun SettingsScreen(
                         showTensionSheet = true
                     }
                 )
+
+                // MANUAL WEIGHT INPUT: Placed directly below the Tension card
+                if (connectionState != ConnectionState.Connected) {
+                    OutlinedTextField(
+                        value = localManualWeight,
+                        onValueChange = {
+                            localManualWeight = it
+                            it.toDoubleOrNull()?.let { weight -> onWeightChange(weight) }
+                        },
+                        label = { Text("Manual Weight Target (${if (useLbs) "lbs" else "kg"})") },
+                        placeholder = { Text("20.0") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
 
                 DataSourceCard(
                     title = "Kinematics Data",
@@ -130,7 +146,7 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            // --- DISPLAY ---
+            // --- DISPLAY & FEEDBACK ---
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Display & Feedback", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
 
@@ -182,7 +198,7 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            // --- BEHAVIOR ---
+            // --- BEHAVIOR & TARGETS ---
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Behavior & Targets", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
 
@@ -265,7 +281,7 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            // --- WEBSITE & HARDWARE COMMANDS ---
+            // --- SYSTEM COMMANDS ---
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("System Commands", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
 
@@ -283,7 +299,7 @@ fun SettingsScreen(
 
                 if (connectionState == ConnectionState.Connected) {
                     Button(onClick = onRecalibrate, modifier = Modifier.fillMaxWidth()) {
-                        Text("Zero Progressor Scale")
+                        Text("Zero Connected Scale")
                     }
                 }
             }
@@ -330,35 +346,9 @@ fun SettingsScreen(
                     Text("Select Tension Source", style = MaterialTheme.typography.titleLarge)
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    OutlinedCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.outlinedCardColors(containerColor = Color.Transparent)
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Timer, contentDescription = null)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Basic Web Timer (Manual Weight)", style = MaterialTheme.typography.titleMedium)
-                            }
-                            OutlinedTextField(
-                                value = localManualWeight,
-                                onValueChange = {
-                                    localManualWeight = it
-                                    it.toDoubleOrNull()?.let { weight -> onWeightChange(weight) }
-                                },
-                                label = { Text("Target Weight") },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                        Text("Bluetooth Crane Scales", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                        if (connectionState == ConnectionState.Connected) {
-                            TextButton(onClick = { onDisconnect(); showTensionSheet = false }) { Text("Disconnect", color = MaterialTheme.colorScheme.error) }
-                        }
+                    Text("Bluetooth Crane Scales", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                    if (connectionState == ConnectionState.Connected) {
+                        TextButton(onClick = { onDisconnect(); showTensionSheet = false }) { Text("Disconnect Current Scale", color = MaterialTheme.colorScheme.error) }
                     }
                     Spacer(modifier = Modifier.height(8.dp))
 
