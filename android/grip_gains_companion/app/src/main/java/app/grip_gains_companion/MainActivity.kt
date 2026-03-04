@@ -350,12 +350,21 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             webViewBridge.buttonEnabled.collect { isLive ->
                 val isConnected = bluetoothManager.connectionState.value == ConnectionState.Connected
-                if (!isConnected) {
+                val currentUrl = webViewBridge.currentUrl.value
+                val hasAutoWeight = webViewBridge.targetWeight.value != null && webViewBridge.targetWeight.value!! > 0.0
+
+                // GATEKEEPER: Only allow RAW session if on basic-timer AND no auto-weight is set
+                val isRawEligible = currentUrl.contains("basic-timer") && !hasAutoWeight
+
+                if (!isConnected && isRawEligible) {
                     if (isLive && !rawSessionManager.isHoldActive) {
                         rawSessionManager.startHold()
                     } else if (!isLive && rawSessionManager.isHoldActive) {
                         rawSessionManager.stopHold()
                     }
+                } else if (!isRawEligible && rawSessionManager.isHoldActive) {
+                    // Failsafe: Stop the engine if it somehow started but is no longer eligible
+                    rawSessionManager.stopHold()
                 }
             }
         }
