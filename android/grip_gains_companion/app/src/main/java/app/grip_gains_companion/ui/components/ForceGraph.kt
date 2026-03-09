@@ -2,6 +2,7 @@ package app.grip_gains_companion.ui.components
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -39,9 +40,9 @@ fun ForceGraph(
         Canvas(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(120.dp)
-                .background(Color(0xFF1A2231)) // Hardcoded Grip Gains background
-                .padding(vertical = 8.dp)
+                .fillMaxHeight() // Let the Sheet container decide the height
+                .background(Color(0xFF1A2231))
+                .padding(top = 8.dp, bottom = 24.dp) // Extra bottom padding for the label
         ) {
             if (forceHistory.isEmpty()) return@Canvas
 

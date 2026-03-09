@@ -1,110 +1,76 @@
 package app.grip_gains_companion.ui.components
 
 import android.annotation.SuppressLint
+import android.graphics.Bitmap
 import android.view.ViewGroup
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.runtime.*
+import android.webkit.*
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
-import app.grip_gains_companion.config.AppConstants
 import app.grip_gains_companion.service.web.JavaScriptBridge
 import app.grip_gains_companion.service.web.WebViewBridge
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun TimerWebView(
-    webViewBridge: WebViewBridge,
+    bridge: WebViewBridge,
+    cachedWebView: android.webkit.WebView,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
-    val webBackgroundColor = Color(0xFF1A2231)
+    AndroidView(
+        modifier = modifier,
+        factory = {
+            // USE the cachedWebView passed in, DO NOT instantiate a new WebView(context)
+            cachedWebView.apply {
+                // Detach from any previous parent when returning from another Compose screen
+                (parent as? ViewGroup)?.removeView(this)
 
-    var pageLoaded by remember { mutableStateOf(false) }
-    val alpha by animateFloatAsState(
-        targetValue = if (pageLoaded) 1f else 0f,
-        animationSpec = tween(durationMillis = 300),
-        label = "WebViewFade"
-    )
+                bridge.setWebView(this)
 
-    val webView = remember {
-        WebView(context).apply {
-            setBackgroundColor(android.graphics.Color.parseColor("#1A2231"))
-            layoutParams = ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
+                setOnScrollChangeListener { _, _, scrollY, _, oldScrollY ->
+                    val isScrollingDown = scrollY > oldScrollY
+                    val isAtTop = scrollY < 50
 
-            settings.apply {
-                javaScriptEnabled = true
-                domStorageEnabled = true
-                cacheMode = WebSettings.LOAD_DEFAULT
-                setSupportZoom(false)
-                builtInZoomControls = false
-                displayZoomControls = false
-                loadWithOverviewMode = true
-                useWideViewPort = true
-                allowFileAccess = false
-                allowContentAccess = false
-            }
-
-            addJavascriptInterface(webViewBridge, "Android")
-            webViewBridge.setWebView(this)
-
-            webViewClient = object : WebViewClient() {
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    super.onPageFinished(view, url)
-                    view?.evaluateJavascript(JavaScriptBridge.backgroundTimeOffsetScript, null)
-                    view?.evaluateJavascript(JavaScriptBridge.closePickerOnLoadScript, null)
-                    view?.evaluateJavascript(JavaScriptBridge.observerScript, null)
-                    view?.evaluateJavascript(JavaScriptBridge.targetWeightObserverScript, null)
-                    view?.evaluateJavascript(JavaScriptBridge.remainingTimeObserverScript, null)
-                    view?.evaluateJavascript(JavaScriptBridge.settingsVisibilityObserverScript, null)
-                    view?.evaluateJavascript(JavaScriptBridge.saveButtonObserverScript, null)
-
-                    webViewBridge.updateHistoryState(view?.canGoBack() == true, view?.canGoForward() == true)
-                    webViewBridge.updateUrl(url)
-                    pageLoaded = true
+                    if (isScrollingDown && !isAtTop) {
+                        bridge.setToolbarVisible(false)
+                    } else if (oldScrollY > scrollY || isAtTop) {
+                        bridge.setToolbarVisible(true)
+                    }
                 }
 
-                override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
-                    super.doUpdateVisitedHistory(view, url, isReload)
-                    webViewBridge.updateHistoryState(view?.canGoBack() == true, view?.canGoForward() == true)
-                    webViewBridge.updateUrl(url)
+                webViewClient = object : WebViewClient() {
+                    override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                        super.onPageStarted(view, url, favicon)
+                        url?.let { bridge.updateUrl(it) }
+                    }
+
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        super.onPageFinished(view, url)
+                        bridge.updateHistoryState(canGoBack(), canGoForward())
+
+                        view?.evaluateJavascript(JavaScriptBridge.remainingTimeObserverScript, null)
+                        view?.evaluateJavascript(JavaScriptBridge.observerScript, null)
+                        view?.evaluateJavascript(JavaScriptBridge.targetWeightObserverScript, null)
+                        view?.evaluateJavascript(JavaScriptBridge.saveButtonObserverScript, null)
+                        view?.evaluateJavascript(JavaScriptBridge.basicTimerEndObserverScript, null)
+                    }
+
+                    override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+                        super.doUpdateVisitedHistory(view, url, isReload)
+                        bridge.updateHistoryState(canGoBack(), canGoForward())
+                        url?.let { bridge.updateUrl(it) }
+
+                        // FORCE Passive Observers to start whenever you switch pages on the site
+                        view?.evaluateJavascript(JavaScriptBridge.targetWeightObserverScript, null)
+                        view?.evaluateJavascript(JavaScriptBridge.basicTimerEndObserverScript, null)
+                        view?.evaluateJavascript(JavaScriptBridge.saveButtonObserverScript, null)
+                        view?.evaluateJavascript(JavaScriptBridge.observerScript, null)
+                    }}
+                // Only load a URL if the WebView is completely blank (first launch)
+                if (url == null) {
+                    loadUrl("https://gripgains.ca")
                 }
             }
-
-            // Listen for native scroll to hide/show toolbar
-            setOnScrollChangeListener { _, _, scrollY, _, oldScrollY ->
-                val dy = scrollY - oldScrollY
-                if (dy > 15 && webViewBridge.isToolbarVisible.value) {
-                    webViewBridge.setToolbarVisible(false)
-                } else if (dy < -15 && !webViewBridge.isToolbarVisible.value) {
-                    webViewBridge.setToolbarVisible(true)
-                }
-            }
-
-            loadUrl(AppConstants.GRIP_GAINS_URL)
         }
-    }
-
-    DisposableEffect(Unit) {
-        onDispose { webView.destroy() }
-    }
-
-    Box(modifier = modifier.background(webBackgroundColor)) {
-        AndroidView(
-            factory = { webView },
-            modifier = Modifier.fillMaxSize().alpha(alpha)
-        )
-    }
+    )
 }

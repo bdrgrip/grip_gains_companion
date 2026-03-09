@@ -107,18 +107,19 @@ object JavaScriptBridge {
             }
         })();
     """.trimIndent()
-    
+
     /**
-     * Click the "End Session" button to abort the session
+     * Swift-Parity Clicker: Matches Swift's .session-actions-end selector
      */
     val clickEndSessionButton = """
         (function() {
-            const button = document.querySelector('button.btn-danger.btn-lg.session-actions-end');
-            if (button && !button.disabled) {
-                button.click();
+            const btn = document.querySelector('button.btn-danger.btn-lg.session-actions-end');
+            if (btn) { 
+                btn.click(); 
             }
         })();
     """.trimIndent()
+
     
     /**
      * Check if fail button is enabled and send result to Android
@@ -193,71 +194,56 @@ object JavaScriptBridge {
     /**
      * MutationObserver script for real-time target weight and duration changes
      */
+    /**
+     * MutationObserver script for real-time target weight, duration, and gripper info changes
+     */
+    /**
+     * MutationObserver script for real-time target weight, duration, and ISO INFO
+     * (MATCHES SWIFT EXACTLY FOR .text-purple-200)
+     */
+    /**
+     * Polling script for real-time target weight, duration, and ISO INFO
+     * Immune to SPA page navigations.
+     */
+    /**
+     * Swift-Parity Scraper: Watches for .text-purple-200 and .text-white
+     */
     val targetWeightObserverScript = """
         (function() {
-            function scrapeAndSendValues() {
+            if (window._ggTimer) clearInterval(window._ggTimer);
+            window._ggTimer = setInterval(() => {
                 const elements = document.querySelectorAll('.session-preview-header .text-white');
-                let foundWeight = false;
-                let foundDuration = false;
+                let w = null;
+                let d = -1;
 
                 for (const elem of elements) {
                     const text = elem.textContent.trim();
 
-                    if (!foundWeight && (text.includes('kg') || text.includes('lbs') || text.includes('lb'))) {
-                        Android.onTargetWeightChanged(text);
-                        foundWeight = true;
+                    // Check for weight
+                    if (!w && (text.includes('kg') || text.includes('lbs') || text.includes('lb'))) {
+                        w = text;
                     }
 
-                    if (!foundDuration && text.endsWith('s') && !text.includes('kg') && !text.includes('lb')) {
+                    // Check for duration (Ends with 's' and has no weight text)
+                    if (d === -1 && text.endsWith('s') && !text.includes('kg') && !text.includes('lb')) {
                         const seconds = parseInt(text);
                         if (!isNaN(seconds) && seconds > 0) {
-                            Android.onTargetDurationChanged(seconds);
-                            foundDuration = true;
+                            d = seconds;
                         }
                     }
                 }
 
-                if (!foundWeight) {
-                    Android.onTargetWeightChanged(null);
-                }
-                if (!foundDuration) {
-                    Android.onTargetDurationChanged(-1);
-                }
+                Android.onTargetWeightChanged(w);
+                Android.onTargetDurationChanged(d);
 
-                const purpleElements = document.querySelectorAll('.session-preview-header .text-purple-200');
-                const gripper = purpleElements.length > 0 ? purpleElements[0].textContent.trim() : null;
-                const side = purpleElements.length > 1 ? purpleElements[1].textContent.trim() : null;
-                Android.onSessionInfoChanged(gripper, side);
-            }
-
-            function setupTargetObserver() {
-                const previewHeader = document.querySelector('.session-preview-header');
-                if (!previewHeader) {
-                    setTimeout(setupTargetObserver, 500);
-                    return;
-                }
-
-                const observer = new MutationObserver(function() {
-                    scrapeAndSendValues();
-                });
-
-                observer.observe(previewHeader, {
-                    childList: true,
-                    subtree: true,
-                    characterData: true
-                });
-
-                scrapeAndSendValues();
-            }
-
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', setupTargetObserver);
-            } else {
-                setupTargetObserver();
-            }
+                const purples = document.querySelectorAll('.session-preview-header .text-purple-200');
+                const g = purples.length > 0 ? purples[0].textContent.trim() : null;
+                const s = purples.length > 1 ? purples[1].textContent.trim() : null;
+                Android.onSessionInfoChanged(g, s);
+            }, 500);
         })();
     """.trimIndent()
-    
+
     /**
      * MutationObserver script to detect settings visibility changes
      */
@@ -345,6 +331,26 @@ object JavaScriptBridge {
     /**
      * Scrape available weight options from the picker
      */
+
+    /**
+     * Intercepts the physical click on the Reset/Copy buttons
+     */
+    /**
+     * Basic Timer "Workout Complete" Passive Detector
+     */
+    val basicTimerEndObserverScript = """
+        (function() {
+            if (window._ggBasic) clearInterval(window._ggBasic);
+            window._ggBasic = setInterval(() => {
+                const body = document.body.innerText || "";
+                if (body.includes('WORKOUT COMPLETE') || body.includes('RESET TIMER')) {
+                    Android.onSessionManuallyEnded();
+                }
+            }, 1000);
+        })();
+    """.trimIndent()
+
+
     val scrapeWeightOptions = """
         (function() {
             const button = document.querySelector('.weight-picker-button');

@@ -2,211 +2,178 @@ package app.grip_gains_companion.service.web
 
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
-import app.grip_gains_companion.config.AppConstants
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import org.json.JSONArray
 
-/**
- * Bridge between Android and JavaScript in the WebView
- * Handles JS -> Android callbacks via @JavascriptInterface
- */
 class WebViewBridge {
-
-    private val _currentUrl = MutableStateFlow("")
-    val currentUrl: StateFlow<String> = _currentUrl.asStateFlow()
-
-    fun updateUrl(url: String?) {
-        _currentUrl.value = url ?: ""
-    }
-
     private var webView: WebView? = null
 
-    // History States
+    private val _sessionGripper = MutableStateFlow<String?>("")
+    val sessionGripper = _sessionGripper.asStateFlow()
+
+    private val _sessionSide = MutableStateFlow<String?>("Bilateral")
+    val sessionSide = _sessionSide.asStateFlow()
+
+    private val _manualSessionEndTrigger = MutableStateFlow(false)
+    val manualSessionEndTrigger = _manualSessionEndTrigger.asStateFlow()
+
+    // UI & Navigation State
     private val _canGoBack = MutableStateFlow(false)
-    val canGoBack: StateFlow<Boolean> = _canGoBack.asStateFlow()
+    val canGoBack = _canGoBack.asStateFlow()
 
     private val _canGoForward = MutableStateFlow(false)
-    val canGoForward: StateFlow<Boolean> = _canGoForward.asStateFlow()
+    val canGoForward = _canGoForward.asStateFlow()
+
+    private val _isToolbarVisible = MutableStateFlow(true)
+    val isToolbarVisible = _isToolbarVisible.asStateFlow()
+
+    private val _currentUrl = MutableStateFlow("")
+    val currentUrl = _currentUrl.asStateFlow()
+
+    // Timer & Data State
+    private val _remainingTime = MutableStateFlow<Int?>(null)
+    val remainingTime = _remainingTime.asStateFlow()
+
+    private val _buttonEnabled = MutableStateFlow(false)
+    val buttonEnabled = _buttonEnabled.asStateFlow()
+
+    private val _targetWeight = MutableStateFlow<Double?>(null)
+    val targetWeight = _targetWeight.asStateFlow()
+
+    private val _targetDuration = MutableStateFlow<Int?>(null)
+    val targetDuration = _targetDuration.asStateFlow()
+
+    private val _saveButtonAppeared = MutableStateFlow(false)
+    val saveButtonAppeared = _saveButtonAppeared.asStateFlow()
+
+    private val _latestRepStats = MutableStateFlow<String?>(null)
+    val latestRepStats = _latestRepStats.asStateFlow()
+
+    // Methods for UI to call
+    fun setWebView(view: WebView) { this.webView = view }
 
     fun updateHistoryState(back: Boolean, forward: Boolean) {
         _canGoBack.value = back
         _canGoForward.value = forward
     }
 
-    fun goBack() {
-        webView?.goBack()
+    fun setToolbarVisible(visible: Boolean) { _isToolbarVisible.value = visible }
+    fun goBack() { webView?.goBack() }
+    fun goForward() { webView?.goForward() }
+    fun reloadPage() { webView?.post { webView?.reload() } }
+
+    fun clearWebsiteData() {
+        webView?.post {
+            webView?.clearCache(true)
+            webView?.clearHistory()
+            android.webkit.WebStorage.getInstance().deleteAllData()
+            webView?.reload()
+        }
     }
 
-    fun goForward() {
-        webView?.goForward()
+    fun clickFailButton() {
+        webView?.post {
+            // Evaluates the exact script you provided to click the fail button
+            webView?.evaluateJavascript(JavaScriptBridge.clickFailButton, null)
+        }
     }
 
-    private val _isToolbarVisible = MutableStateFlow(true)
-    val isToolbarVisible: StateFlow<Boolean> = _isToolbarVisible.asStateFlow()
-
-    fun setToolbarVisible(visible: Boolean) {
-        _isToolbarVisible.value = visible
+    fun resetSaveFlag() {
+        _saveButtonAppeared.value = false
     }
 
-    // State flows for reactive updates
-    private val _buttonEnabled = MutableStateFlow(false)
-    val buttonEnabled: StateFlow<Boolean> = _buttonEnabled.asStateFlow()
-
-    private val _targetWeight = MutableStateFlow<Double?>(null)
-    val targetWeight: StateFlow<Double?> = _targetWeight.asStateFlow()
-
-    private val _targetDuration = MutableStateFlow<Int?>(null)
-    val targetDuration: StateFlow<Int?> = _targetDuration.asStateFlow()
-
-    private val _remainingTime = MutableStateFlow<Int?>(null)
-    val remainingTime: StateFlow<Int?> = _remainingTime.asStateFlow()
-
-    private val _weightOptions = MutableStateFlow<List<Double>>(emptyList())
-    val weightOptions: StateFlow<List<Double>> = _weightOptions.asStateFlow()
-
-    private val _weightOptionsIsLbs = MutableStateFlow(false)
-    val weightOptionsIsLbs: StateFlow<Boolean> = _weightOptionsIsLbs.asStateFlow()
-
-    private val _gripper = MutableStateFlow<String?>(null)
-    val gripper: StateFlow<String?> = _gripper.asStateFlow()
-
-    private val _side = MutableStateFlow<String?>(null)
-    val side: StateFlow<String?> = _side.asStateFlow()
-
-    private val _settingsVisible = MutableStateFlow(true)
-    val settingsVisible: StateFlow<Boolean> = _settingsVisible.asStateFlow()
-
-    // Events
-    private val _saveButtonAppeared = MutableSharedFlow<Unit>()
-    val saveButtonAppeared = _saveButtonAppeared.asSharedFlow()
-
-    fun setWebView(webView: WebView) {
-        this.webView = webView
+    fun clickEndSessionButton() {
+        val js = """
+            (function() {
+                let attempts = 0;
+                let clicker = setInterval(() => {
+                    // Finds the button even if it's hidden inside the Session Actions accordion
+                    let btn = document.querySelector('button.btn-danger.btn-lg.session-actions-end');
+                    if (btn && !btn.disabled) { 
+                        btn.click(); 
+                        clearInterval(clicker);
+                    }
+                    if (++attempts > 20) clearInterval(clicker);
+                }, 100);
+            })();
+        """.trimIndent()
+        webView?.post { webView?.evaluateJavascript(js, null) }
     }
 
-    // MARK: - JavaScript Interface (JS -> Android)
-
-    @JavascriptInterface
-    fun onButtonStateChanged(enabled: Boolean) {
-        _buttonEnabled.value = enabled
-    }
-
-    @JavascriptInterface
-    fun onTargetWeightChanged(weightString: String?) {
-        _targetWeight.value = weightString?.let { parseWeight(it) }
-    }
+    // =========================================================================
+    // JAVASCRIPT INTERFACES (Must match names in JavaScriptBridge.kt exactly)
+    // =========================================================================
 
     @JavascriptInterface
     fun onTargetDurationChanged(seconds: Int) {
-        _targetDuration.value = if (seconds > 0) seconds else null
+        // If the JS couldn't find a duration, it sends -1. We must convert that to null!
+        _targetDuration.value = if (seconds == -1) null else seconds
     }
 
     @JavascriptInterface
-    fun onRemainingTimeChanged(seconds: Int) {
-        _remainingTime.value = if (seconds != -9999) seconds else null
+    fun onSessionManuallyEnded() {
+        _manualSessionEndTrigger.value = true
+    }
+
+    fun resetManualSessionEndTrigger() {
+        _manualSessionEndTrigger.value = false
     }
 
     @JavascriptInterface
-    fun onWeightOptionsChanged(weightsJson: String, isLbs: Boolean) {
-        try {
-            val jsonArray = JSONArray(weightsJson)
-            val weights = mutableListOf<Double>()
-            for (i in 0 until jsonArray.length()) {
-                weights.add(jsonArray.getDouble(i))
-            }
-            _weightOptions.value = weights.sorted()
-            _weightOptionsIsLbs.value = isLbs
-        } catch (e: Exception) {
-            _weightOptions.value = emptyList()
-            _weightOptionsIsLbs.value = false
-        }
+    fun updateUrl(url: String) {
+        _currentUrl.value = url
     }
 
     @JavascriptInterface
     fun onSessionInfoChanged(gripper: String?, side: String?) {
-        _gripper.value = gripper
-        _side.value = side
+        _sessionGripper.value = gripper
+        _sessionSide.value = side
     }
 
     @JavascriptInterface
-    fun onSettingsVisibleChanged(visible: Boolean) {
-        _settingsVisible.value = visible
+    fun onRemainingTimeChanged(seconds: Int) {
+        _remainingTime.value = seconds
+    }
+
+    @JavascriptInterface
+    fun onButtonStateChanged(isEnabled: Boolean) {
+        _buttonEnabled.value = isEnabled
+    }
+
+    @JavascriptInterface
+    fun onTargetWeightChanged(weightStr: String?) {
+        if (weightStr == null) {
+            _targetWeight.value = null
+        } else {
+            val lowercased = weightStr.lowercase()
+            val isLbs = lowercased.contains("lbs") || lowercased.contains("lb")
+            val digits = lowercased.replace(Regex("[^0-9.]"), "")
+            val value = digits.toDoubleOrNull()
+
+            if (value != null) {
+                // ALWAYS store as kg internally!
+                _targetWeight.value = if (isLbs) value / 2.20462 else value
+            } else {
+                _targetWeight.value = null
+            }
+        }
     }
 
     @JavascriptInterface
     fun onSaveButtonAppeared() {
-        _saveButtonAppeared.tryEmit(Unit)
+        _saveButtonAppeared.value = true
     }
 
-    // MARK: - Android -> JavaScript
-
-    fun clickFailButton() {
-        evaluateJavaScript(JavaScriptBridge.clickFailButton)
+    // You mentioned the iOS app handles the JSON stats. If your JavaScriptBridge
+    // eventually injects a script to extract the JSON, it will call this.
+    @JavascriptInterface
+    fun onRepStatsExtracted(jsonString: String) {
+        _latestRepStats.value = jsonString
     }
 
-    fun clickEndSessionButton() {
-        evaluateJavaScript(JavaScriptBridge.clickEndSessionButton)
-    }
+    @JavascriptInterface
+    fun onSettingsVisibleChanged(isVisible: Boolean) { }
 
-    fun refreshButtonState() {
-        evaluateJavaScript(JavaScriptBridge.checkFailButtonState)
-    }
-
-    fun reloadPage() {
-        webView?.reload()
-    }
-
-    fun clearWebsiteData() {
-        webView?.clearCache(true)
-        webView?.clearHistory()
-        android.webkit.CookieManager.getInstance().removeAllCookies(null)
-        webView?.reload()
-    }
-
-    fun scrapeTargetWeight() {
-        evaluateJavaScript(JavaScriptBridge.scrapeTargetWeight)
-    }
-
-    fun scrapeWeightOptions() {
-        evaluateJavaScript(JavaScriptBridge.scrapeWeightOptions)
-    }
-
-    fun setTargetWeight(weightKg: Double) {
-        evaluateJavaScript(JavaScriptBridge.setTargetWeightScript(weightKg))
-    }
-
-    fun recordBackgroundStart() {
-        evaluateJavaScript("window._recordBackgroundStart()")
-    }
-
-    fun addBackgroundTime(milliseconds: Double) {
-        evaluateJavaScript("window._addBackgroundTime($milliseconds)")
-    }
-
-    private fun evaluateJavaScript(script: String) {
-        webView?.post {
-            webView?.evaluateJavascript(script, null)
-        }
-    }
-
-    // MARK: - Weight Parsing
-
-    private fun parseWeight(string: String): Double? {
-        val lowercased = string.lowercase()
-        val isLbs = lowercased.contains("lbs") || lowercased.contains("lb")
-
-        val cleaned = lowercased
-            .replace("lbs", "")
-            .replace("lb", "")
-            .replace("kg", "")
-            .trim()
-
-        val value = cleaned.toDoubleOrNull() ?: return null
-
-        return if (isLbs) value / AppConstants.KG_TO_LBS else value
-    }
+    @JavascriptInterface
+    fun onWeightOptionsChanged(jsonArrayStr: String, isLbs: Boolean) { }
 }

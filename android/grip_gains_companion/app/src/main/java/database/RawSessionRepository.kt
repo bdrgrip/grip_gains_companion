@@ -1,6 +1,8 @@
 package app.grip_gains_companion.database
 
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
 
 class RawSessionRepository(private val dao: RawSessionDao) {
     val allSessions: Flow<List<RawSessionEntity>> = dao.getAllSessions()
@@ -10,14 +12,20 @@ class RawSessionRepository(private val dao: RawSessionDao) {
     }
 
     suspend fun insert(session: RawSessionEntity) {
-        dao.insert(session)
+        withContext(Dispatchers.IO) {
+            dao.insert(session)
+        }
     }
 
     suspend fun update(session: RawSessionEntity) {
-        dao.update(session)
+        withContext(Dispatchers.IO) {
+            dao.update(session)
+        }
     }
 
     suspend fun delete(session: RawSessionEntity) {
-        dao.delete(session)
+        withContext(Dispatchers.IO) {
+            dao.delete(session)
+        }
     }
 }

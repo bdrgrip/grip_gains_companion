@@ -25,7 +25,8 @@ fun RawLineChart(
     restDurations: List<Double> = emptyList(), // NEW: Pass the real durations
     pColor: Color,
     sColor: Color = Color.Gray,
-    connectGaps: Boolean = false
+    connectGaps: Boolean = false,
+    modifier: Modifier = Modifier
 ) {
     if (times.isEmpty() || primary.isEmpty()) return
 
@@ -36,7 +37,7 @@ fun RawLineChart(
     val restStyle = TextStyle(color = onSurfaceVariant, fontSize = 9.sp)
     val dividerColor = onSurface.copy(alpha = 0.2f)
 
-    Canvas(modifier = Modifier.fillMaxWidth().height(200.dp).padding(vertical = 8.dp)) {
+    Canvas(modifier = modifier) {
         val validPrimary = primary.filter { !it.isNaN() }
         val maxP = (validPrimary.maxOrNull()?.toFloat() ?: 1f) * 1.2f
         val maxS = (secondary?.filter { !it.isNaN() }?.maxOrNull()?.toFloat() ?: 1f) * 1.2f

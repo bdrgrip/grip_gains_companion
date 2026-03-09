@@ -7,13 +7,18 @@ import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 
 @Database(
-    entities = [RawSessionEntity::class],
-    version = 7,
+    entities = [
+        RawSessionEntity::class,
+        IsoSessionEntity::class,
+        IsoRepEntity::class
+    ],
+    version = 10, // Bumped for the new schema
     exportSchema = false
 )
-@TypeConverters(Converters::class) // Add this line
+@TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun rawSessionDao(): RawSessionDao
+    abstract fun isoSessionDao(): IsoSessionDao
 
     companion object {
         @Volatile
@@ -26,7 +31,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "grip_gains_database"
                 )
-                    .fallbackToDestructiveMigration() // Add this line
+                    .fallbackToDestructiveMigration()
                     .build()
                     .also { INSTANCE = it }
             }

@@ -2,6 +2,7 @@ package app.grip_gains_companion.data
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.dataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.doublePreferencesKey
@@ -15,12 +16,12 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import java.util.Locale
 
-private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
-
+val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
 /**
  * Repository for app preferences using DataStore
  */
 class PreferencesRepository(private val context: Context) {
+    private val dataStore = context.dataStore
 
     // Keys
     private object Keys {
@@ -70,9 +71,39 @@ class PreferencesRepository(private val context: Context) {
         val EARLY_FAIL_THRESHOLD_PERCENT = doublePreferencesKey("early_fail_threshold_percent")
 
         val LAST_CONNECTED_DEVICE_ADDRESS = stringPreferencesKey("last_connected_device_address")
+        val ENABLE_ISOTONIC_MODE = booleanPreferencesKey("enable_isotonic_mode")
+
+        val ENABLE_ANALYTICS = booleanPreferencesKey("enable_analytics")
+        val SHOW_ISO_SUMMARY = booleanPreferencesKey("show_iso_summary")
+        val SHOW_RAW_SUMMARY = booleanPreferencesKey("show_raw_summary")
     }
 
-    // --- RESTORED AUTO FAIL SETTINGS ---
+    // --- NEW TOGGLE FIXED ---
+    val enableIsotonicMode: Flow<Boolean> = context.dataStore.data.map { it[Keys.ENABLE_ISOTONIC_MODE] ?: true }
+    suspend fun setEnableIsotonicMode(value: Boolean) = context.dataStore.edit { it[Keys.ENABLE_ISOTONIC_MODE] = value }
+
+    // --- ANALYTICS PREFERENCES ---
+    val enableAnalytics: Flow<Boolean> = context.dataStore.data.map {
+        it[Keys.ENABLE_ANALYTICS] ?: true
+    }
+    suspend fun setEnableAnalytics(value: Boolean) = context.dataStore.edit {
+        it[Keys.ENABLE_ANALYTICS] = value
+    }
+
+    val showIsoSummary: Flow<Boolean> = context.dataStore.data.map {
+        it[Keys.SHOW_ISO_SUMMARY] ?: true
+    }
+    suspend fun setShowIsoSummary(value: Boolean) = context.dataStore.edit {
+        it[Keys.SHOW_ISO_SUMMARY] = value
+    }
+
+    val showRawSummary: Flow<Boolean> = context.dataStore.data.map {
+        it[Keys.SHOW_RAW_SUMMARY] ?: true
+    }
+    suspend fun setShowRawSummary(value: Boolean) = context.dataStore.edit {
+        it[Keys.SHOW_RAW_SUMMARY] = value
+    }
+
     val autoFailRep: Flow<Boolean> = context.dataStore.data.map { it[Keys.AUTO_FAIL_REP] ?: false }
     suspend fun setAutoFailRep(value: Boolean) = context.dataStore.edit { it[Keys.AUTO_FAIL_REP] = value }
 

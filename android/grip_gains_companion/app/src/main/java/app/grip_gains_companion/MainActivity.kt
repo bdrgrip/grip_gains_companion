@@ -1,7 +1,11 @@
 package app.grip_gains_companion
 
 import android.Manifest
+import android.annotation.SuppressLint
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorEvent
@@ -17,29 +21,42 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Smartphone
+import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import app.grip_gains_companion.data.PreferencesRepository
-import app.grip_gains_companion.database.AppDatabase
-import app.grip_gains_companion.database.RawSessionEntity
-import app.grip_gains_companion.database.RawSessionRepository
+import app.grip_gains_companion.database.*
 import app.grip_gains_companion.model.ConnectionState
+import app.grip_gains_companion.model.KinematicsSource
+import app.grip_gains_companion.service.IsoSessionManager
 import app.grip_gains_companion.service.ProgressorHandler
 import app.grip_gains_companion.service.RawSessionManager
 import app.grip_gains_companion.service.SessionResult
+import app.grip_gains_companion.service.TimerForegroundService
 import app.grip_gains_companion.service.ble.BluetoothManager
 import app.grip_gains_companion.service.web.WebViewBridge
 import app.grip_gains_companion.ui.screens.*
@@ -47,8 +64,8 @@ import app.grip_gains_companion.ui.theme.GripGainsTheme
 import app.grip_gains_companion.util.HapticManager
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import app.grip_gains_companion.model.KinematicsSource
-import app.grip_gains_companion.model.TensionSource
+import java.util.UUID
+import android.content.res.Configuration
 
 class MainActivity : ComponentActivity() {
 
@@ -60,8 +77,11 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var sensorManager: SensorManager
     private var linearAccelerometer: Sensor? = null
-    private var rawSessionManager = RawSessionManager()
 
+    private var rawSessionManager = RawSessionManager()
+    private var isoSessionManager = IsoSessionManager()
+
+    private var showIsoSummary by mutableStateOf(false)
     private var activeKinematicsSource by mutableStateOf(KinematicsSource.PHONE)
     private var currentManualWeight by mutableDoubleStateOf(20.0)
 
@@ -71,7 +91,21 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var database: AppDatabase
     private lateinit var rawRepository: RawSessionRepository
+    private lateinit var sessionRepository: SessionRepository
     private var finishedSessionData by mutableStateOf<SessionResult?>(null)
+
+    private val failRepReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == TimerForegroundService.ACTION_FAIL_REP) {
+                hapticManager.warning()
+                webViewBridge.clickFailButton()
+
+                val stopIntent = Intent(this@MainActivity, TimerForegroundService::class.java)
+                stopIntent.action = TimerForegroundService.ACTION_STOP
+                startService(stopIntent)
+            }
+        }
+    }
 
     private val sensorListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent) {
@@ -91,48 +125,80 @@ class MainActivity : ComponentActivity() {
                 } else {
                     currentManualWeight
                 }
-                rawSessionManager.addSample(latestX, latestY, latestZ, activeTension, event.timestamp)
+                rawSessionManager.addSample(
+                    latestX,
+                    latestY,
+                    latestZ,
+                    activeTension,
+                    event.timestamp
+                )
             }
         }
+
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
     }
 
     private val requiredPermissions: Array<String>
-        get() = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.POST_NOTIFICATIONS)
+        get() = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.POST_NOTIFICATIONS
+            )
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT
+            )
         } else {
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
         }
 
-    private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
-        if (permissions.all { it.value }) bluetoothManager.startScanning()
-    }
+    private val permissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
+            if (permissions.all { it.value }) bluetoothManager.startScanning()
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            window.isNavigationBarContrastEnforced = false
-        }
+        ContextCompat.registerReceiver(
+            this,
+            failRepReceiver,
+            IntentFilter(TimerForegroundService.ACTION_FAIL_REP),
+            ContextCompat.RECEIVER_EXPORTED
+        )
+
+        database = AppDatabase.getDatabase(this)
+        rawRepository = RawSessionRepository(database.rawSessionDao())
+        sessionRepository = SessionRepository(database.rawSessionDao(), database.isoSessionDao())
+
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        // Init Services
         bluetoothManager = BluetoothManager(this)
         progressorHandler = ProgressorHandler()
         webViewBridge = WebViewBridge()
         preferencesRepository = PreferencesRepository(this)
         hapticManager = HapticManager(this)
-        database = AppDatabase.getDatabase(this)
-        rawRepository = RawSessionRepository(database.rawSessionDao())
 
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         linearAccelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
-        sensorManager.registerListener(sensorListener, linearAccelerometer, SensorManager.SENSOR_DELAY_GAME)
+        sensorManager.registerListener(
+            sensorListener,
+            linearAccelerometer,
+            SensorManager.SENSOR_DELAY_GAME
+        )
 
         lifecycleScope.launch { preferencesRepository.initializeUnitsIfNeeded() }
+
         bluetoothManager.onForceSample = { force, timestamp ->
-            lifecycleScope.launch { progressorHandler.processSample(force, timestamp) }
+            lifecycleScope.launch {
+                progressorHandler.processSample(force, timestamp)
+                if (isoSessionManager.isRepActive) {
+                    isoSessionManager.addSample(force)
+                }
+            }
         }
 
         setupEventHandlers()
@@ -142,174 +208,427 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val navController = rememberNavController()
+            val haptic = LocalHapticFeedback.current
+
+            val snackbarHostState = remember { SnackbarHostState() }
+
+            // UI Global States
             var showWeightPrompt by remember { mutableStateOf(false) }
-            var weightInputText by remember { mutableStateOf(currentManualWeight.toString()) }
+            var showTensionSheet by remember { mutableStateOf(false) }
+            var showKinematicsSheet by remember { mutableStateOf(false) }
+
+            val enableAnalytics by preferencesRepository.enableAnalytics.collectAsState(initial = true)
+            val showIsoSummaryPref by preferencesRepository.showIsoSummary.collectAsState(initial = true)
+            val showRawSummaryPref by preferencesRepository.showRawSummary.collectAsState(initial = true)
+
+            // Scoped Data
+            val currentUrl by webViewBridge.currentUrl.collectAsState()
+            val webWeight by webViewBridge.targetWeight.collectAsState()
+            val isBasicTimerPage = currentUrl.contains("basic-timer")
+            val rawSessions by sessionRepository.getAllRawSessions().collectAsState(initial = emptyList())
+            val recentMuscles = remember(rawSessions) { rawSessions.map { it.targetMuscle }.distinct().sorted() }
+            val allIsoSessions by sessionRepository.getAllIsoSessions().collectAsState(initial = emptyList())
+            val recentEquipment = remember(allIsoSessions) { allIsoSessions.map { it.gripperType }.distinct().sorted() }
+            var isoOverrideWeight by remember { mutableStateOf<Double?>(null) }
 
             val connectionState by bluetoothManager.connectionState.collectAsState()
             val isConnected = connectionState == ConnectionState.Connected
+            val discoveredDevices by bluetoothManager.discoveredDevices.collectAsState()
 
+            val isoGripper by webViewBridge.sessionGripper.collectAsState()
+            val isoSide by webViewBridge.sessionSide.collectAsState()
+
+            // Prefs
             val useLbs by preferencesRepository.useLbs.collectAsState(initial = false)
-            val showStatusBar by preferencesRepository.showStatusBar.collectAsState(initial = true)
             val expandedForceBar by preferencesRepository.expandedForceBar.collectAsState(initial = true)
             val showForceGraph by preferencesRepository.showForceGraph.collectAsState(initial = true)
             val forceGraphWindow by preferencesRepository.forceGraphWindow.collectAsState(initial = 5)
             val enableTargetWeight by preferencesRepository.enableTargetWeight.collectAsState(initial = true)
             val useManualTarget by preferencesRepository.useManualTarget.collectAsState(initial = false)
-            val manualTargetWeight by preferencesRepository.manualTargetWeight.collectAsState(initial = 20.0)
             val weightTolerance by preferencesRepository.weightTolerance.collectAsState(initial = 0.5)
             val enableHaptics by preferencesRepository.enableHaptics.collectAsState(initial = true)
             val enableCalibration by preferencesRepository.enableCalibration.collectAsState(initial = true)
+            val enableIsotonicMode by preferencesRepository.enableIsotonicMode.collectAsState(initial = true)
 
-            LaunchedEffect(enableCalibration) { progressorHandler.enableCalibration = enableCalibration }
+            val effectiveTargetWeight = if (isBasicTimerPage) {
+                currentManualWeight
+            } else {
+                isoOverrideWeight ?: webWeight ?: (if (useLbs) 20.0 / 2.20462 else 20.0)
+            }
+
+            LaunchedEffect(enableCalibration) {
+                progressorHandler.enableCalibration = enableCalibration
+            }
             LaunchedEffect(connectionState) {
                 if (connectionState == ConnectionState.Connected && enableHaptics) hapticManager.success()
                 if (connectionState == ConnectionState.Disconnected) progressorHandler.reset()
             }
 
-            GripGainsTheme {
-                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    NavHost(
-                        navController = navController,
-                        startDestination = "setup",
-                        enterTransition = {
-                            if (targetState.destination.route == "main") fadeIn(tween(400))
-                            else slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Up, tween(300))
-                        },
-                        exitTransition = {
-                            if (targetState.destination.route == "main") fadeOut(tween(400))
-                            else fadeOut(tween(300))
-                        },
-                        popEnterTransition = { fadeIn(tween(300)) },
-                        popExitTransition = { slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Down, tween(300)) }
-                    ) {
-                        composable("setup") {
-                            SetupDashboardScreen(
-                                preferencesRepository = preferencesRepository, // Added this parameter
-                                bluetoothManager = bluetoothManager,
-                                onStartTraining = { source, weight, kinematicsSrc -> // Named the first parameter 'source'
-                                    currentManualWeight = weight
-                                    activeKinematicsSource = kinematicsSrc
-                                    // You can use 'source' here if you need to trigger specific BLE logic for the scale
-                                    navController.navigate("main") { popUpTo(0) }
-                                }
-                            )
+            LaunchedEffect(effectiveTargetWeight) {
+                progressorHandler.targetWeight = effectiveTargetWeight
+            }
+
+            // UNIFIED END SESSION LOGIC
+            LaunchedEffect(Unit) {
+                kotlinx.coroutines.flow.merge(
+                    webViewBridge.manualSessionEndTrigger,
+                    webViewBridge.saveButtonAppeared
+                ).collect { triggered ->
+                    if (triggered) {
+                        val isotonicEnabled = preferencesRepository.enableIsotonicMode.first()
+                        processSessionEnd(
+                            isotonicEnabled = isotonicEnabled,
+                            enableAnalytics = enableAnalytics,
+                            showIsoSummaryPref = showIsoSummaryPref,
+                            showRawSummaryPref = showRawSummaryPref,
+                            onAutoSaveIso = {
+                                lifecycleScope.launch { snackbarHostState.showSnackbar("Isometric session auto-saved") }
+                            }
+                        )
+                        webViewBridge.resetManualSessionEndTrigger()
+                        webViewBridge.resetSaveFlag()
+                    }
+                }
+            }
+
+            var weightInputText by remember { mutableStateOf(effectiveTargetWeight.toString()) }
+
+            val baseContext = LocalContext.current
+
+            // FIX: Wrap the Activity context directly with a native Dark Theme.
+            // This keeps the Window Token intact so dropdown pop-ups actually open!
+            val darkContext = remember(baseContext) {
+                android.view.ContextThemeWrapper(baseContext, android.R.style.Theme_Material_NoActionBar)
+            }
+
+            val cachedWebView = remember {
+                android.webkit.WebView(darkContext).apply {
+                    setBackgroundColor(android.graphics.Color.parseColor("#1A2231"))
+
+                    // CHANGED: Disable algorithmic darkening to stop it from spilling into the website CSS.
+                    if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.ALGORITHMIC_DARKENING)) {
+                        androidx.webkit.WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, false)
+                    }
+
+                    settings.apply {
+                        javaScriptEnabled = true
+                        domStorageEnabled = true
+                    }
+
+                    webChromeClient = object : android.webkit.WebChromeClient() {
+                        override fun onJsAlert(view: android.webkit.WebView?, url: String?, message: String?, result: android.webkit.JsResult?): Boolean {
+                            android.app.AlertDialog.Builder(darkContext, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                                .setMessage(message)
+                                .setPositiveButton(android.R.string.ok) { dialog, _ -> result?.confirm(); dialog.dismiss() }
+                                .setOnDismissListener { result?.cancel() }
+                                .show()
+                            return true
                         }
 
-                        composable("main") {
-                            DisposableEffect(Unit) {
-                                enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
-                                onDispose {
-                                    enableEdgeToEdge(statusBarStyle = SystemBarStyle.auto(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT))
+                        override fun onJsConfirm(view: android.webkit.WebView?, url: String?, message: String?, result: android.webkit.JsResult?): Boolean {
+                            android.app.AlertDialog.Builder(darkContext, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                                .setMessage(message)
+                                .setPositiveButton(android.R.string.ok) { dialog, _ ->
+                                    result?.confirm()
+                                    dialog.dismiss()
                                 }
-                            }
+                                .setNegativeButton(android.R.string.cancel) { dialog, _ ->
+                                    result?.cancel()
+                                    dialog.dismiss()
+                                }
+                                .setOnDismissListener { result?.cancel() }
+                                .show()
+                            return true
+                        }
+                    }
 
-                            Box(modifier = Modifier.fillMaxSize()) {
+                    addJavascriptInterface(webViewBridge, "Android")
+                    addJavascriptInterface(webViewBridge, "AndroidBridge")
+                }
+            }
+
+            GripGainsTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        NavHost(
+                            navController = navController,
+                            startDestination = "main",
+                            enterTransition = {
+                                if (targetState.destination.route == "main") fadeIn(tween(400))
+                                else if (targetState.destination.route?.contains("session_details") == true) {
+                                    slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Left, tween(300))
+                                }
+                                else slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Up, tween(300))
+                            },
+                            exitTransition = {
+                                if (targetState.destination.route == "main") fadeOut(tween(400))
+                                else fadeOut(tween(300))
+                            },
+                            popEnterTransition = { fadeIn(tween(300)) },
+                            popExitTransition = {
+                                if (initialState.destination.route?.contains("session_details") == true) {
+                                    slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Right, tween(300))
+                                }
+                                else slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Down, tween(300))
+                            }
+                        ) {
+                            composable("main") {
+                                DisposableEffect(Unit) {
+                                    enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
+                                    onDispose {
+                                        enableEdgeToEdge(statusBarStyle = SystemBarStyle.auto(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT))
+                                    }
+                                }
+
                                 MainScreen(
                                     bluetoothManager = bluetoothManager,
                                     progressorHandler = progressorHandler,
                                     webViewBridge = webViewBridge,
-                                    showStatusBar = showStatusBar,
+                                    showStatusBar = true,
                                     expandedForceBar = expandedForceBar,
                                     showForceGraph = showForceGraph,
                                     forceGraphWindow = forceGraphWindow,
                                     useLbs = useLbs,
                                     enableTargetWeight = enableTargetWeight,
                                     useManualTarget = useManualTarget,
-                                    manualTargetWeight = currentManualWeight, // Use the fast local state here
+                                    manualTargetWeight = effectiveTargetWeight,
+                                    cachedWebView = cachedWebView,
                                     weightTolerance = weightTolerance,
+                                    activeKinematicsSource = activeKinematicsSource,
+                                    enableAnalytics = enableAnalytics,
+                                    enableIsotonicMode = enableIsotonicMode,
                                     onSettingsTap = { navController.navigate("settings") },
                                     onHistoryTap = { navController.navigate("history") },
                                     onUnitToggle = { lifecycleScope.launch { preferencesRepository.setUseLbs(!useLbs) } },
                                     onSetManualWeightTap = {
-                                        weightInputText = currentManualWeight.toString()
+                                        val isDefault = Math.abs(effectiveTargetWeight - 20.0) < 0.1 || Math.abs(effectiveTargetWeight - (20.0 / 2.20462)) < 0.1
+                                        weightInputText = if (isDefault) "20" else {
+                                            val displayWeight = if (useLbs) effectiveTargetWeight * 2.20462 else effectiveTargetWeight
+                                            String.format(java.util.Locale.US, "%.1f", displayWeight)
+                                        }
                                         showWeightPrompt = true
+                                    },
+                                    onShowTensionSheet = { showTensionSheet = true },
+                                    onShowKinematicsSheet = { showKinematicsSheet = true }
+                                )
+                            }
+
+                            composable("settings") {
+                                SettingsScreen(
+                                    preferencesRepository = preferencesRepository,
+                                    bluetoothManager = bluetoothManager,
+                                    webViewBridge = webViewBridge,
+                                    activeKinematicsSource = activeKinematicsSource,
+                                    currentManualWeight = currentManualWeight,
+                                    onKinematicsChange = { activeKinematicsSource = it },
+                                    onWeightChange = { currentManualWeight = it },
+                                    onDismiss = { navController.popBackStack() },
+                                    onDisconnect = { bluetoothManager.disconnect() },
+                                    onConnectDevice = { bluetoothManager.startScanning(); navController.popBackStack() },
+                                    onRecalibrate = {
+                                        progressorHandler.recalibrate()
+                                        lifecycleScope.launch { snackbarHostState.showSnackbar("Scale Zeroed") }
+                                    },
+                                    onViewLogs = { navController.navigate("logs") },
+                                    onViewHistory = { navController.navigate("history") }
+                                )
+                            }
+
+                            composable("history") {
+                                HistoryScreen(
+                                    sessionRepository = sessionRepository,
+                                    enableIsotonicMode = enableIsotonicMode, // <-- THIS WAS MISSING
+                                    onBack = { navController.popBackStack() },
+                                    onViewSession = { id, type ->
+                                        if (type == SessionType.ISOTONIC) {
+                                            val rawId = id.replace("RAW_", "").toLongOrNull() ?: -1L
+                                            navController.navigate("session_details/$rawId")
+                                        } else {
+                                            val isoId = id.replace("ISO_", "")
+                                            navController.navigate("iso_session_details/$isoId")
+                                        }
                                     }
                                 )
+                            }
 
-                                if (showWeightPrompt) {
-                                    AlertDialog(
-                                        onDismissRequest = { showWeightPrompt = false },
-                                        title = { Text("Set Basic Timer Weight") },
-                                        text = {
-                                            OutlinedTextField(
-                                                value = weightInputText,
-                                                onValueChange = { weightInputText = it },
-                                                label = { Text(if (useLbs) "Weight (lbs)" else "Weight (kg)") },
-                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                                            )
-                                        },
-                                        confirmButton = {
-                                            Button(onClick = {
-                                                weightInputText.toDoubleOrNull()?.let { newWeight ->
-                                                    currentManualWeight = newWeight
-                                                    // Force the DataStore to update in the background
-                                                    lifecycleScope.launch { preferencesRepository.setManualTargetWeight(newWeight) }
-                                                }
-                                                showWeightPrompt = false
-                                            }) { Text("Save") }
-                                        },
-                                        dismissButton = {
-                                            TextButton(onClick = { showWeightPrompt = false }) { Text("Cancel") }
-                                        }
-                                    )
-                                }
+                            composable("session_details/{sessionId}") { backStackEntry ->
+                                val sessionIdStr = backStackEntry.arguments?.getString("sessionId") ?: "-1"
+                                val sessionId = sessionIdStr.toLongOrNull() ?: -1L
+                                SessionDetailScreen(
+                                    sessionId = sessionId,
+                                    rawRepository = rawRepository,
+                                    recentMuscles = recentMuscles,
+                                    onBack = { navController.popBackStack() }
+                                )
+                            }
+
+                            composable("iso_session_details/{sessionId}") { backStackEntry ->
+                                val sessionId = backStackEntry.arguments?.getString("sessionId") ?: ""
+                                IsoSessionDetailScreen(
+                                    sessionId = sessionId,
+                                    sessionRepository = sessionRepository,
+                                    useLbs = useLbs,
+                                    onBack = { navController.popBackStack() }
+                                )
+                            }
+
+                            composable("logs") {
+                                LogViewerScreen(onDismiss = { navController.popBackStack() })
                             }
                         }
 
-                        composable("settings") {
-                            SettingsScreen(
-                                preferencesRepository = preferencesRepository,
-                                bluetoothManager = bluetoothManager,
-                                webViewBridge = webViewBridge,
-                                activeKinematicsSource = activeKinematicsSource,
-                                currentManualWeight = currentManualWeight,
-                                onKinematicsChange = { activeKinematicsSource = it },
-                                onWeightChange = { currentManualWeight = it },
-                                onDismiss = { navController.popBackStack() },
-                                onDisconnect = {
-                                    bluetoothManager.disconnect()
-                                    navController.navigate("setup") { popUpTo(0) }
-                                },
-                                onConnectDevice = {
-                                    bluetoothManager.startScanning()
-                                    navController.popBackStack()
-                                },
-                                onRecalibrate = {
-                                    progressorHandler.recalibrate()
-                                    android.widget.Toast.makeText(this@MainActivity, "Scale Zeroed", android.widget.Toast.LENGTH_SHORT).show()
-                                },
-                                onViewLogs = { navController.navigate("logs") },
-                                onViewHistory = { navController.navigate("history") }
-                            )
-                        }
-
-                        composable("history") {
-                            HistoryScreen(
-                                rawRepository = rawRepository,
-                                onBack = { navController.popBackStack() },
-                                onViewSession = { id -> navController.navigate("session_details/$id") }
-                            )
-                        }
-
-                        composable("session_details/{sessionId}") { backStackEntry ->
-                            val sessionIdStr = backStackEntry.arguments?.getString("sessionId") ?: "-1"
-                            val sessionId = sessionIdStr.toLongOrNull() ?: -1L
-
-                            SessionDetailScreen(
-                                sessionId = sessionId,
-                                rawRepository = rawRepository,
-                                onBack = { navController.popBackStack() }
-                            )
-                        }
-
-                        composable("logs") {
-                            LogViewerScreen(onDismiss = { navController.popBackStack() })
-                        }
+                        SnackbarHost(
+                            hostState = snackbarHostState,
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 100.dp)
+                        )
                     }
 
+                    // MODALS & OVERLAYS
+                    if (showWeightPrompt) {
+                        AlertDialog(
+                            onDismissRequest = { showWeightPrompt = false },
+                            title = { Text(if (isBasicTimerPage) "Set Basic Timer Weight" else "Override Target Weight") },
+                            text = {
+                                OutlinedTextField(
+                                    value = weightInputText,
+                                    onValueChange = { weightInputText = it },
+                                    label = { Text(if (useLbs) "Weight (lbs)" else "Weight (kg)") },
+                                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number)
+                                )
+                            },
+                            confirmButton = {
+                                Button(onClick = {
+                                    weightInputText.toDoubleOrNull()?.let { typedWeight ->
+                                        val internalKg = if (useLbs) typedWeight / 2.20462 else typedWeight
+                                        if (isBasicTimerPage) {
+                                            currentManualWeight = internalKg
+                                            lifecycleScope.launch { preferencesRepository.setManualTargetWeight(internalKg) }
+                                        } else {
+                                            isoOverrideWeight = internalKg
+                                        }
+                                    }
+                                    showWeightPrompt = false
+                                }) { Text("Save") }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showWeightPrompt = false }) { Text("Cancel") }
+                            }
+                        )
+                    }
+
+                    if (showTensionSheet) {
+                        AlertDialog(
+                            onDismissRequest = { showTensionSheet = false },
+                            shape = RoundedCornerShape(28.dp),
+                            title = { Text("Select Tension Source", fontWeight = FontWeight.Bold) },
+                            text = {
+                                Column {
+                                    if (isConnected) {
+                                        TextButton(
+                                            onClick = { bluetoothManager.disconnect(); showTensionSheet = false },
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Text("Disconnect Current Scale", color = MaterialTheme.colorScheme.error)
+                                        }
+                                        Spacer(modifier = Modifier.height(16.dp))
+                                    }
+
+                                    if (discoveredDevices.isEmpty() && !isConnected) {
+                                        Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                                            CircularProgressIndicator()
+                                        }
+                                    } else {
+                                        LazyColumn(modifier = Modifier.heightIn(max = 350.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            items(discoveredDevices) { device ->
+                                                Surface(
+                                                    onClick = {
+                                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                        bluetoothManager.connect(device)
+                                                        showTensionSheet = false
+                                                    },
+                                                    shape = RoundedCornerShape(16.dp),
+                                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) {
+                                                    @SuppressLint("MissingPermission")
+                                                    ListItem(
+                                                        headlineContent = { Text(device.name ?: "Unknown Device", fontWeight = FontWeight.Bold) },
+                                                        supportingContent = { Text(device.address) },
+                                                        leadingContent = { Icon(Icons.Default.Bluetooth, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                                                        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(onClick = { showTensionSheet = false }) { Text("Close") }
+                            }
+                        )
+                    }
+
+                    if (showKinematicsSheet) {
+                        AlertDialog(
+                            onDismissRequest = { showKinematicsSheet = false },
+                            shape = RoundedCornerShape(28.dp),
+                            title = { Text("Select Kinematics Source", fontWeight = FontWeight.Bold) },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Surface(
+                                        onClick = {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            activeKinematicsSource = KinematicsSource.PHONE
+                                            showKinematicsSheet = false
+                                        },
+                                        shape = RoundedCornerShape(16.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        ListItem(
+                                            headlineContent = { Text("Phone Accelerometer", fontWeight = FontWeight.Bold) },
+                                            supportingContent = { Text("Uses internal gravity sensors.") },
+                                            leadingContent = { Icon(Icons.Default.Smartphone, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                                            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                                        )
+                                    }
+
+                                    Surface(
+                                        onClick = {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            activeKinematicsSource = KinematicsSource.M5STICK
+                                            showKinematicsSheet = false
+                                        },
+                                        shape = RoundedCornerShape(16.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        ListItem(
+                                            headlineContent = { Text("M5StickC Plus 2", fontWeight = FontWeight.Bold) },
+                                            supportingContent = { Text("External Bluetooth IMU.") },
+                                            leadingContent = { Icon(Icons.Default.Watch, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) },
+                                            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                                        )
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(onClick = { showKinematicsSheet = false }) { Text("Close") }
+                            }
+                        )
+                    }
+
+                    // SESSION SUMMARIES
                     finishedSessionData?.let { result ->
                         RawSummaryScreen(
                             result = result,
+                            recentMuscles = recentMuscles,
                             onDismiss = { finishedSessionData = null },
                             onSave = { muscle, side ->
                                 lifecycleScope.launch {
@@ -331,8 +650,49 @@ class MainActivity : ComponentActivity() {
                                         averageRepInterval = result.averageRepInterval,
                                         restDurations = result.restDurations
                                     )
-                                    rawRepository.insert(entity)
+                                    sessionRepository.insertRaw(entity)
                                     finishedSessionData = null
+                                    snackbarHostState.showSnackbar("Raw session saved successfully")
+                                }
+                            }
+                        )
+                    }
+
+                    if (showIsoSummary) {
+                        val mappedSide = when {
+                            isoSide?.contains("Left", ignoreCase = true) == true -> "Left"
+                            isoSide?.contains("Right", ignoreCase = true) == true -> "Right"
+                            else -> "Bilateral"
+                        }
+                        IsoSummaryScreen(
+                            reps = isoSessionManager.completedReps,
+                            useLbs = useLbs,
+                            initialGripper = isoGripper ?: "",
+                            initialSide = mappedSide,
+                            recentEquipment = recentEquipment,
+                            onDismiss = {
+                                showIsoSummary = false
+                                isoSessionManager.clearSession()
+                                webViewBridge.resetSaveFlag()
+                            },
+                            onSave = { equipment, side ->
+                                lifecycleScope.launch {
+                                    val sessionEntity = IsoSessionEntity(
+                                        id = UUID.randomUUID().toString(),
+                                        timestamp = System.currentTimeMillis(),
+                                        gripperType = equipment,
+                                        side = side,
+                                        scrapedGripper = isoGripper,
+                                        scrapedSide = mappedSide
+                                    )
+                                    sessionRepository.insertIsoSession(sessionEntity)
+                                    sessionRepository.insertIsoReps(isoSessionManager.completedReps.map {
+                                        it.copy(sessionId = sessionEntity.id)
+                                    })
+                                    showIsoSummary = false
+                                    isoSessionManager.clearSession()
+                                    webViewBridge.resetSaveFlag()
+                                    snackbarHostState.showSnackbar("Isometric session saved successfully")
                                 }
                             }
                         )
@@ -344,51 +704,44 @@ class MainActivity : ComponentActivity() {
 
     private fun setupEventHandlers() {
         lifecycleScope.launch {
-            preferencesRepository.manualTargetWeight.collect { weight -> currentManualWeight = weight }
+            preferencesRepository.manualTargetWeight.collect { currentManualWeight = it }
         }
 
+        var isotonicModeEnabled = true
+        lifecycleScope.launch {
+            preferencesRepository.enableIsotonicMode.collect { isotonicModeEnabled = it }
+        }
+
+        // RESTORED: THE CRITICAL MISSING LOGIC
         lifecycleScope.launch {
             webViewBridge.buttonEnabled.collect { isLive ->
-                val isConnected = bluetoothManager.connectionState.value == ConnectionState.Connected
                 val currentUrl = webViewBridge.currentUrl.value
                 val hasAutoWeight = webViewBridge.targetWeight.value != null && webViewBridge.targetWeight.value!! > 0.0
+                val isRawEligible = currentUrl.contains("basic-timer") && !hasAutoWeight && isotonicModeEnabled
 
-                // GATEKEEPER: Only allow RAW session if on basic-timer AND no auto-weight is set
-                val isRawEligible = currentUrl.contains("basic-timer") && !hasAutoWeight
+                if (isRawEligible) {
+                    if (isLive) { if (!rawSessionManager.isHoldActive) rawSessionManager.startHold() }
+                    else { if (rawSessionManager.isHoldActive) rawSessionManager.stopHold() }
+                } else {
+                    if (isLive) { if (!isoSessionManager.isRepActive) isoSessionManager.startRep() }
+                    else {
+                        if (isoSessionManager.isRepActive) {
+                            val fallbackWeight = webViewBridge.targetWeight.value ?: currentManualWeight
+                            val targetDur = webViewBridge.targetDuration.value
+                            isoSessionManager.endRep(fallbackWeight, targetDur)
 
-                if (!isConnected && isRawEligible) {
-                    if (isLive && !rawSessionManager.isHoldActive) {
-                        rawSessionManager.startHold()
-                    } else if (!isLive && rawSessionManager.isHoldActive) {
-                        rawSessionManager.stopHold()
-                    }
-                } else if (!isRawEligible && rawSessionManager.isHoldActive) {
-                    // Failsafe: Stop the engine if it somehow started but is no longer eligible
-                    rawSessionManager.stopHold()
-                }
-            }
-        }
-
-        lifecycleScope.launch {
-            var wasTicking = false
-            var watchdogJob: kotlinx.coroutines.Job? = null
-
-            webViewBridge.remainingTime.collect { remaining ->
-                val isConnected = bluetoothManager.connectionState.value == ConnectionState.Connected
-                if (!isConnected) {
-                    if (remaining != null) {
-                        if (remaining > 0) wasTicking = true
-                        watchdogJob?.cancel()
-                        watchdogJob = launch {
-                            kotlinx.coroutines.delay(3500)
-                            if (wasTicking) {
-                                if (rawSessionManager.isHoldActive) rawSessionManager.stopHold()
-                                val result = rawSessionManager.finalizeSession()
-                                if (result.workoutScore >= 0 && result.timeSeries.isNotEmpty()) {
-                                    finishedSessionData = result
+                            if (isoSessionManager.completedReps.size == 1) {
+                                val firstRep = isoSessionManager.completedReps.first()
+                                lifecycleScope.launch {
+                                    val enableEarlyFail = preferencesRepository.enableEndSessionOnEarlyFail.first()
+                                    val thresholdPercent = preferencesRepository.earlyFailThresholdPercent.first()
+                                    if (enableEarlyFail && targetDur != null) {
+                                        if (firstRep.duration < (targetDur * thresholdPercent)) {
+                                            hapticManager.error()
+                                            webViewBridge.clickEndSessionButton()
+                                        }
+                                    }
                                 }
-                                wasTicking = false
-                                rawSessionManager = RawSessionManager()
                             }
                         }
                     }
@@ -396,27 +749,109 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        lifecycleScope.launch {
-            webViewBridge.buttonEnabled.collect { enabled -> progressorHandler.canEngage = enabled }
-        }
+        var isForegroundServiceRunning = false
+        var sessionStartTime = 0L
 
         lifecycleScope.launch {
-            webViewBridge.targetWeight.collect { weight ->
-                val enableTargetWeight = preferencesRepository.enableTargetWeight.first()
-                val useManualTarget = preferencesRepository.useManualTarget.first()
-                if (enableTargetWeight && !useManualTarget) {
-                    progressorHandler.targetWeight = weight
+            webViewBridge.remainingTime.collect { remaining ->
+                if (remaining != null && remaining != -9999) {
+                    if (!isForegroundServiceRunning) {
+                        sessionStartTime = System.currentTimeMillis()
+                        isForegroundServiceRunning = true
+                    }
+                    val elapsed = ((System.currentTimeMillis() - sessionStartTime) / 1000).toInt()
+                    TimerForegroundService.updateNotification(this@MainActivity, elapsed, remaining)
+                } else {
+                    if (isForegroundServiceRunning) {
+                        val stopIntent = Intent(this@MainActivity, TimerForegroundService::class.java).apply {
+                            action = TimerForegroundService.ACTION_STOP
+                        }
+                        startService(stopIntent)
+                        isForegroundServiceRunning = false
+                    }
                 }
             }
         }
     }
 
-    private fun hasAllPermissions(): Boolean = requiredPermissions.all { permission ->
-        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+    private fun processSessionEnd(
+        isotonicEnabled: Boolean,
+        enableAnalytics: Boolean,
+        showIsoSummaryPref: Boolean,
+        showRawSummaryPref: Boolean,
+        onAutoSaveIso: () -> Unit
+    ) {
+        val currentUrl = webViewBridge.currentUrl.value
+        val hasAutoWeight = (webViewBridge.targetWeight.value ?: 0.0) > 0.0
+        val isRawEligible = currentUrl.contains("basic-timer") && !hasAutoWeight && isotonicEnabled
+
+        // RULE: Analytics Off = Delete everything
+        if (!enableAnalytics) {
+            if (isRawEligible) {
+                if (rawSessionManager.isHoldActive) rawSessionManager.stopHold()
+                rawSessionManager.finalizeSession()
+                rawSessionManager = RawSessionManager()
+            } else {
+                val fallbackWeight = webViewBridge.targetWeight.value ?: currentManualWeight
+                if (isoSessionManager.isRepActive) isoSessionManager.endRep(fallbackWeight)
+                isoSessionManager.clearSession()
+            }
+            return
+        }
+
+        // RULE: Analytics On
+        if (isRawEligible) {
+            if (rawSessionManager.isHoldActive) rawSessionManager.stopHold()
+            val result = rawSessionManager.finalizeSession()
+            // RULE B: Discard Basic Timer if preference is off
+            if (result.timeUnderTension > 0.5 && showRawSummaryPref) {
+                finishedSessionData = result
+            }
+            rawSessionManager = RawSessionManager()
+        } else {
+            val fallbackWeight = webViewBridge.targetWeight.value ?: currentManualWeight
+            if (isoSessionManager.isRepActive) isoSessionManager.endRep(fallbackWeight)
+
+            if (isoSessionManager.completedReps.isNotEmpty()) {
+                if (showIsoSummaryPref) {
+                    showIsoSummary = true
+                } else {
+                    // RULE A: Auto-save Iso without Popup
+                    lifecycleScope.launch {
+                        val sSide = webViewBridge.sessionSide.value
+                        val sGrip = webViewBridge.sessionGripper.value ?: ""
+                        val mappedSide = when {
+                            sSide?.contains("Left", ignoreCase = true) == true -> "Left"
+                            sSide?.contains("Right", ignoreCase = true) == true -> "Right"
+                            else -> "Bilateral"
+                        }
+                        val sessionEntity = IsoSessionEntity(
+                            id = UUID.randomUUID().toString(),
+                            timestamp = System.currentTimeMillis(),
+                            gripperType = sGrip,
+                            side = mappedSide,
+                            scrapedGripper = sGrip.takeIf { it.isNotBlank() },
+                            scrapedSide = mappedSide
+                        )
+                        sessionRepository.insertIsoSession(sessionEntity)
+                        sessionRepository.insertIsoReps(isoSessionManager.completedReps.map {
+                            it.copy(sessionId = sessionEntity.id)
+                        })
+                        isoSessionManager.clearSession()
+                        onAutoSaveIso()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun hasAllPermissions(): Boolean = requiredPermissions.all {
+        ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        unregisterReceiver(failRepReceiver)
         sensorManager.unregisterListener(sensorListener)
         bluetoothManager.disconnect()
     }

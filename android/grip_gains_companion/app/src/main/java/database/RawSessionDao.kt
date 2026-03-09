@@ -1,23 +1,27 @@
 package app.grip_gains_companion.database
 
-import androidx.room.*
+import androidx.room.Dao
+import androidx.room.Delete
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
+import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
 
-@JvmSuppressWildcards
 @Dao
 interface RawSessionDao {
     @Query("SELECT * FROM raw_sessions ORDER BY timestamp DESC")
     fun getAllSessions(): Flow<List<RawSessionEntity>>
 
-    @Query("SELECT * FROM raw_sessions WHERE id = :id")
+    @Query("SELECT * FROM raw_sessions WHERE id = :id LIMIT 1")
     fun getSessionById(id: Long): Flow<RawSessionEntity?>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insert(session: RawSessionEntity): Long
+    fun insert(session: RawSessionEntity): Long
 
     @Update
-    suspend fun update(session: RawSessionEntity): Int
+    fun update(session: RawSessionEntity)
 
     @Delete
-    suspend fun delete(session: RawSessionEntity): Int
+    fun delete(session: RawSessionEntity)
 }

@@ -1,22 +1,30 @@
 package app.grip_gains_companion.ui.screens
 
-import androidx.compose.foundation.background
+import androidx.compose.animation.*
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.*
-import androidx.compose.runtime.*
+
+import androidx.compose.runtime.* import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.grip_gains_companion.database.RawSessionRepository
-import app.grip_gains_companion.ui.components.RawLineChart
-import app.grip_gains_companion.ui.components.RepMarkersOverlay
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -25,132 +33,184 @@ import java.util.*
 fun SessionDetailScreen(
     sessionId: Long,
     rawRepository: RawSessionRepository,
+    recentMuscles: List<String>, // <--- 1. ADD THIS PARAMETER
     onBack: () -> Unit
 ) {
+    val focusManager = LocalFocusManager.current
     val session by rawRepository.getSessionById(sessionId).collectAsState(initial = null)
 
+    // <--- 2. WE DELETED THE TWO FAILING DATABASE LINES FROM HERE
+
+    val coroutineScope = rememberCoroutineScope()
+
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    var showEditDialog by remember { mutableStateOf(false) }
+    var editMuscle by remember { mutableStateOf("") }
+    var editSide by remember { mutableStateOf("") }
+
+    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
+
     Scaffold(
+        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
-            TopAppBar(
-                title = { Text("Session Details") },
+            LargeTopAppBar(
+                title = { Text("RAW Session Details", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
-                }
+                },
+                actions = {
+                    IconButton(onClick = {
+                        session?.let {
+                            editMuscle = it.targetMuscle
+                            editSide = it.bodySide
+                            showEditDialog = true
+                        }
+                    }) { Icon(Icons.Default.Edit, contentDescription = "Edit") }
+
+                    IconButton(onClick = { showDeleteDialog = true }) {
+                        Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error)
+                    }
+                },
+                scrollBehavior = scrollBehavior
             )
         }
     ) { padding ->
         if (session != null) {
             val s = session!!
-            val tList = s.timeSeries ?: emptyList()
+            val tList = s.timeSeries
 
             if (tList.isEmpty()) {
                 Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
                 return@Scaffold
             }
 
-            val primaryColor = MaterialTheme.colorScheme.primary
-            val secondaryColor = MaterialTheme.colorScheme.secondary
-            val tertiaryColor = MaterialTheme.colorScheme.tertiary
-            val errorColor = MaterialTheme.colorScheme.error
-
-            val hasReps = (s.repTimestamps?.size ?: 0) > 1
-            val cadence = s.averageRepInterval ?: 0.0
-            val minT = tList.firstOrNull { !it.isNaN() } ?: 0.0
-            val maxT = tList.lastOrNull { !it.isNaN() } ?: 1.0
-
-            // LAZYCOLUMN: Completely prevents the infinite height crash
             LazyColumn(
                 modifier = Modifier.fillMaxSize().padding(padding),
                 contentPadding = PaddingValues(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(24.dp)
             ) {
-
-                // --- HEADER ---
                 item {
-                    Text(s.targetMuscle, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = primaryColor)
-                    Text(s.bodySide, style = MaterialTheme.typography.titleMedium, color = secondaryColor)
-                    val dateText = SimpleDateFormat("MMMM d, yyyy • h:mm a", Locale.getDefault()).format(Date(s.timestamp))
-                    Text(dateText, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(modifier = Modifier.height(16.dp))
-                    HorizontalDivider()
-                }
-
-                // --- DASHBOARD ---
-                item {
-                    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
-                        Column(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("Workout Score", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                            Text(s.workoutScore.toInt().toString(), style = MaterialTheme.typography.displayLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                            Spacer(Modifier.height(16.dp))
-                            Row(Modifier.fillMaxWidth(), Arrangement.SpaceEvenly) {
-                                DetailMetricItem("TUT", "${String.format("%.1f", s.durationSeconds)}s")
-                                DetailMetricItem("Work", "${s.mechanicalWork.toInt()}")
-                                if (hasReps && !cadence.isNaN() && !cadence.isInfinite()) { DetailMetricItem("Cadence", "${String.format("%.1f", cadence)}s") }
-                                DetailMetricItem("Reps", "${s.repTimestamps?.size ?: 0}")
-                            }
-                        }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(s.targetMuscle, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        Text(s.bodySide, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.secondary)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        val dateText = SimpleDateFormat("MMMM d, yyyy • h:mm a", Locale.getDefault()).format(Date(s.timestamp))
+                        Text(dateText, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
 
-                // --- TENSION GRAPH ---
                 item {
-                    DetailGraphCard("Tension & Magnitude", listOf("Tension" to primaryColor, "Magnitude" to tertiaryColor)) {
-                        Box(Modifier.fillMaxWidth().height(200.dp)) {
-                            RepMarkersOverlay(s.repTimestamps, minT, maxT)
-                            RawLineChart(tList, s.tensionSeries, s.magnitudeSeries, s.restDurations, primaryColor, tertiaryColor)
-                        }
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(24.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                    ) {
+                        RawDashboardCard(
+                            score = s.workoutScore.toInt(), tut = s.durationSeconds, work = s.mechanicalWork.toInt(),
+                            reps = s.repTimestamps.size, cadence = s.averageRepInterval
+                        )
                     }
                 }
 
-                // --- POWER GRAPH ---
                 item {
-                    DetailGraphCard("3s Density & Inst. Power", listOf("Density" to errorColor, "Power" to secondaryColor)) {
-                        Box(Modifier.fillMaxWidth().height(200.dp)) {
-                            RepMarkersOverlay(s.repTimestamps, minT, maxT)
-                            RawLineChart(tList, s.densitySeries, s.powerSeries, s.restDurations, errorColor, secondaryColor)
-                        }
-                    }
-                }
-
-                // --- WORK GRAPH ---
-                item {
-                    DetailGraphCard("Accumulated Mechanical Work", emptyList()) {
-                        Box(Modifier.fillMaxWidth().height(200.dp)) {
-                            RawLineChart(tList, s.workSeries, null, s.restDurations, primaryColor, Color.Gray, true)
-                        }
-                    }
+                    RawGraphStack(
+                        timeSeries = tList, tensionSeries = s.tensionSeries, magnitudeSeries = s.magnitudeSeries,
+                        densitySeries = s.densitySeries, powerSeries = s.powerSeries, workSeries = s.workSeries,
+                        restDurations = s.restDurations, repTimestamps = s.repTimestamps
+                    )
                     Spacer(Modifier.height(32.dp))
                 }
             }
-        }
-    }
-}
 
-@Composable
-private fun DetailMetricItem(label: String, value: String) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
-        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f))
-    }
-}
-
-@Composable
-private fun DetailGraphCard(title: String, legends: List<Pair<String, Color>>, content: @Composable () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            if (legends.isNotEmpty()) {
-                Row(modifier = Modifier.padding(top = 4.dp, bottom = 8.dp).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    legends.forEach { (name, color) ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(color))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(name, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
+            // DIALOGS
+            if (showDeleteDialog) {
+                AlertDialog(
+                    onDismissRequest = { showDeleteDialog = false },
+                    title = { Text("Delete Session") },
+                    text = { Text("Are you sure? This cannot be undone.") },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                coroutineScope.launch {
+                                    rawRepository.delete(s)
+                                    showDeleteDialog = false
+                                    onBack()
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                        ) { Text("Delete") }
+                    },
+                    dismissButton = { TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") } }
+                )
             }
-            content()
+
+            if (showEditDialog) {
+                AlertDialog(
+                    onDismissRequest = { showEditDialog = false },
+                    title = { Text("Edit RAW Session") },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            // --- INLINE AUTOCOMPLETE ---
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                OutlinedTextField(
+                                    value = editMuscle,
+                                    onValueChange = { editMuscle = it },
+                                    label = { Text("Target Muscle") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    trailingIcon = {
+                                        if (editMuscle.isNotEmpty()) {
+                                            IconButton(onClick = { editMuscle = ""; focusManager.clearFocus() }) { Icon(Icons.Default.Clear, "Clear") }
+                                        }
+                                    }
+                                )
+
+                                val filteredOptions = recentMuscles.filter { it.contains(editMuscle, true) && !it.equals(editMuscle, true) }
+
+                                AnimatedVisibility(
+                                    visible = editMuscle.isNotEmpty() && filteredOptions.isNotEmpty(),
+                                    enter = expandVertically(animationSpec = tween(300)) + fadeIn(),
+                                    exit = shrinkVertically(animationSpec = tween(300)) + fadeOut()
+                                ) {
+                                    Card(
+                                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                                        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                                    ) {
+                                        Column {
+                                            filteredOptions.take(3).forEach { muscle ->
+                                                ListItem(
+                                                    headlineContent = { Text(muscle, fontWeight = FontWeight.Bold) },
+                                                    modifier = Modifier.clickable { editMuscle = muscle; focusManager.clearFocus() },
+                                                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("Side", style = MaterialTheme.typography.labelMedium)
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                FilterChip(selected = editSide == "Left", onClick = { editSide = "Left" }, label = { Text("Left") })
+                                FilterChip(selected = editSide == "Bilateral", onClick = { editSide = "Bilateral" }, label = { Text("Bilateral") })
+                                FilterChip(selected = editSide == "Right", onClick = { editSide = "Right" }, label = { Text("Right") })
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        Button(onClick = {
+                            coroutineScope.launch {
+                                rawRepository.update(s.copy(targetMuscle = editMuscle, bodySide = editSide))
+                                showEditDialog = false
+                            }
+                        }) { Text("Save") }
+                    },
+                    dismissButton = { TextButton(onClick = { showEditDialog = false }) { Text("Cancel") } }
+                )
+            }
         }
     }
 }
