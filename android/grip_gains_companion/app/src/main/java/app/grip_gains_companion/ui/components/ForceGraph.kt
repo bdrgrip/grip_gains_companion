@@ -1,13 +1,13 @@
 package app.grip_gains_companion.ui.components
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
 import app.grip_gains_companion.model.ForceHistoryEntry
 import app.grip_gains_companion.ui.theme.GripGainsTheme
+import kotlinx.coroutines.isActive
 
 @Composable
 fun ForceGraph(
@@ -30,49 +31,89 @@ fun ForceGraph(
     tolerance: Double? = null,
     isReconnecting: Boolean = false
 ) {
-    // Force dark mode for this specific component so the colors always match the web app
     GripGainsTheme(darkTheme = true) {
         val primaryColor = MaterialTheme.colorScheme.primary
         val targetLineColor = MaterialTheme.colorScheme.error.copy(alpha = 0.7f)
         val toleranceBandColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
         val gridColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
 
+        // 1. THE SPRING-LOADED MOMENTUM VALUE
+        val latestForce = forceHistory.lastOrNull()?.force?.toFloat() ?: 0f
+        val animatedLiveForce by animateFloatAsState(
+            targetValue = latestForce,
+            animationSpec = spring(dampingRatio = 0.85f, stiffness = 40f), // Soft, fluid momentum
+            label = "liveEdge"
+        )
+
+        // 2. THE 60FPS VISUAL TRAIL
+        // This decouples the drawing from the slow hardware packets
+        val visualHistory = remember { ArrayList<Pair<Long, Float>>() }
+
+        // Explicitly clear the visual trail only when the real data is reset
+        // (This fixes the bug where the graph wouldn't draw immediately on reconnect!)
+        LaunchedEffect(forceHistory.isEmpty()) {
+            if (forceHistory.isEmpty()) {
+                visualHistory.clear()
+            }
+        }
+
+        var currentFrameTime by remember { mutableLongStateOf(System.currentTimeMillis()) }
+
+        LaunchedEffect(Unit) {
+            while (isActive) {
+                withFrameMillis {
+                    val now = System.currentTimeMillis()
+                    currentFrameTime = now
+
+                    // ALWAYS add to the visual trail. Because this component only exists
+                    // when connected, we want to instantly start drawing the line at 0.0!
+                    visualHistory.add(Pair(now, animatedLiveForce))
+
+                    // Prune old pixels hanging off the left edge of the screen
+                    val cutoff = now - (windowSeconds * 1000L) - 500L
+                    while (visualHistory.isNotEmpty() && visualHistory.first().first < cutoff) {
+                        visualHistory.removeAt(0)
+                    }
+                }
+            }
+        }
+
         Canvas(
             modifier = Modifier
                 .fillMaxWidth()
-                .fillMaxHeight() // Let the Sheet container decide the height
-                .background(Color(0xFF1A2231))
-                .padding(top = 8.dp, bottom = 24.dp) // Extra bottom padding for the label
+                .fillMaxHeight()
+                .padding(top = 8.dp, bottom = 24.dp)
         ) {
-            if (forceHistory.isEmpty()) return@Canvas
+            if (visualHistory.isEmpty() || forceHistory.isEmpty()) return@Canvas
 
-            val now = forceHistory.last().timestamp.time
+            val now = currentFrameTime
             val windowMs = windowSeconds * 1000L
             val cutoff = now - windowMs
 
-            // Filter to visible window
-            val visibleHistory = forceHistory.filter { it.timestamp.time >= cutoff }
+            // Grab the visible points PLUS one point just off-screen to the left to prevent popping
+            val firstVisibleIndex = visualHistory.indexOfFirst { it.first >= cutoff }
+            val startIndex = if (firstVisibleIndex > 0) firstVisibleIndex - 1 else 0
+
+            if (startIndex < 0 || startIndex >= visualHistory.size) return@Canvas
+            val visibleHistory = visualHistory.subList(startIndex, visualHistory.size)
             if (visibleHistory.isEmpty()) return@Canvas
 
-            val maxForceInWindow = visibleHistory.maxOfOrNull { it.force } ?: 1.0
+            val maxForceInWindow = visibleHistory.maxOfOrNull { it.second } ?: 1.0f
 
-            // Calculate Y-axis bounds dynamically, anchoring at 0
             val yMax = if (targetWeight != null) {
-                val targetWithTol = targetWeight + (tolerance ?: 0.0)
-                maxOf(maxForceInWindow, targetWithTol) * 1.2f // 20% headroom
+                val targetWithTol = targetWeight.toFloat() + (tolerance?.toFloat() ?: 0.0f)
+                maxOf(maxForceInWindow, targetWithTol) * 1.2f
             } else {
-                maxOf(maxForceInWindow, 5.0) * 1.2f
+                maxOf(maxForceInWindow, 5.0f) * 1.2f
             }
 
-            // Draw Target Band
             if (targetWeight != null) {
-                val targetY = size.height - ((targetWeight / yMax) * size.height).toFloat()
+                val targetY = size.height - ((targetWeight.toFloat() / yMax) * size.height)
 
                 if (tolerance != null) {
-                    val topY = size.height - (((targetWeight + tolerance) / yMax) * size.height).toFloat()
-                    val bottomY = size.height - (((targetWeight - tolerance) / yMax) * size.height).toFloat()
+                    val topY = size.height - (((targetWeight.toFloat() + tolerance.toFloat()) / yMax) * size.height)
+                    val bottomY = size.height - (((targetWeight.toFloat() - tolerance.toFloat()) / yMax) * size.height)
 
-                    // Tolerance fill
                     drawRect(
                         color = toleranceBandColor,
                         topLeft = Offset(0f, topY),
@@ -80,7 +121,6 @@ fun ForceGraph(
                     )
                 }
 
-                // Target dashed line
                 drawLine(
                     color = targetLineColor,
                     start = Offset(0f, targetY),
@@ -90,7 +130,6 @@ fun ForceGraph(
                 )
             }
 
-            // Draw Zero Line
             drawLine(
                 color = gridColor,
                 start = Offset(0f, size.height),
@@ -98,19 +137,21 @@ fun ForceGraph(
                 strokeWidth = 1.dp.toPx()
             )
 
-            // Draw Live Force Path
+            // --- DRAWING THE BUTTERY TRAIL ---
             val path = Path()
             var pathStarted = false
 
             visibleHistory.forEach { entry ->
-                val timeOffset = entry.timestamp.time - cutoff
+                val timeOffset = entry.first - cutoff
                 val x = (timeOffset.toFloat() / windowMs.toFloat()) * size.width
-                val y = size.height - ((entry.force / yMax) * size.height).toFloat()
+                val y = size.height - ((entry.second / yMax) * size.height)
 
                 if (!pathStarted) {
                     path.moveTo(x, y)
                     pathStarted = true
                 } else {
+                    // Because our visual array has a point every 16 milliseconds,
+                    // drawing a straight line between them automatically creates a perfectly smooth curve!
                     path.lineTo(x, y)
                 }
             }

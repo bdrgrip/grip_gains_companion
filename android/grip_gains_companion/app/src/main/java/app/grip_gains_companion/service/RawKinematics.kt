@@ -107,7 +107,7 @@ class RawSessionManager {
         val restDurations = mutableListOf<Double>()
         val timeSeries = mutableListOf<Double>()
         val tensionSeries = mutableListOf<Double>()
-        val magnitudeSeries = mutableListOf<Double>()
+        val rawMagnitudeSeries = mutableListOf<Double>()
         val powerSeries = mutableListOf<Double>()
         val densitySeries = mutableListOf<Double>()
         val workSeries = mutableListOf<Double>()
@@ -141,7 +141,7 @@ class RawSessionManager {
                 val globalTime = globalTimeOffset + t
                 timeSeries.add(globalTime)
                 tensionSeries.add(hold.tensions[i])
-                magnitudeSeries.add(hold.velocities[i])
+                rawMagnitudeSeries.add(hold.velocities[i])
                 powerSeries.add(instPower)
                 workSeries.add(totalWork)
 
@@ -158,21 +158,44 @@ class RawSessionManager {
             if (index < holds.size - 1) {
                 globalTimeOffset += 1.0
                 timeSeries.add(globalTimeOffset)
-                tensionSeries.add(Double.NaN); magnitudeSeries.add(Double.NaN)
+                tensionSeries.add(Double.NaN); rawMagnitudeSeries.add(Double.NaN)
                 powerSeries.add(Double.NaN); densitySeries.add(Double.NaN)
                 workSeries.add(totalWork)
             }
         }
 
-        val validMags = magnitudeSeries.filter { !it.isNaN() }
-        val threshold = (if (validMags.isNotEmpty()) validMags.maxOrNull() ?: 0.0 else 0.0) * 0.20
+        // --- STATISTICAL CLAMPING FOR EXTREME OUTLIERS ---
+        val validMags = rawMagnitudeSeries.filter { !it.isNaN() }.sorted()
+        val clampedMagnitudeSeries = mutableListOf<Double>()
+
+        if (validMags.isNotEmpty()) {
+            // Find the 75th percentile. We use this as a baseline to define "normal" maximums.
+            val q3Index = (validMags.size * 0.75).toInt()
+            val q3 = validMags[q3Index]
+
+            // Allow spikes to be 2.5x larger than the 75th percentile before we consider them "equipment fumbles"
+            val ceiling = q3 * 2.5
+
+            rawMagnitudeSeries.forEach { mag ->
+                if (mag.isNaN()) {
+                    clampedMagnitudeSeries.add(Double.NaN)
+                } else {
+                    // Clamp extreme spikes to the logical ceiling!
+                    clampedMagnitudeSeries.add(if (mag > ceiling) ceiling else mag)
+                }
+            }
+        }
+
+        val validClamped = clampedMagnitudeSeries.filter { !it.isNaN() }
+        val threshold = (if (validClamped.isNotEmpty()) validClamped.maxOrNull() ?: 0.0 else 0.0) * 0.20
         val rawPeaks = mutableListOf<Double>()
         var lastPeakTime = -Double.MAX_VALUE
-        for (i in 1 until magnitudeSeries.size - 1) {
-            val m = magnitudeSeries[i]
+
+        for (i in 1 until clampedMagnitudeSeries.size - 1) {
+            val m = clampedMagnitudeSeries[i]
             if (m.isNaN()) continue
-            if (m >= threshold && m > (magnitudeSeries[i-1].takeIf { !it.isNaN() } ?: 0.0) && m > (magnitudeSeries[i+1].takeIf { !it.isNaN() } ?: 0.0)) {
-                if (timeSeries[i] - lastPeakTime > 0.25 && !(magnitudeSeries.getOrNull(i+1)?.isNaN() ?: true)) {
+            if (m >= threshold && m > (clampedMagnitudeSeries[i-1].takeIf { !it.isNaN() } ?: 0.0) && m > (clampedMagnitudeSeries[i+1].takeIf { !it.isNaN() } ?: 0.0)) {
+                if (timeSeries[i] - lastPeakTime > 0.25 && !(clampedMagnitudeSeries.getOrNull(i+1)?.isNaN() ?: true)) {
                     rawPeaks.add(timeSeries[i]); lastPeakTime = timeSeries[i]
                 }
             }
@@ -195,7 +218,7 @@ class RawSessionManager {
             val end = kotlin.math.min(k + decimation, timeSeries.size)
             var lastV = k
             while (k < end && !timeSeries[k].isNaN()) {
-                sT += tensionSeries[k]; sM += magnitudeSeries[k]; sP += powerSeries[k]
+                sT += tensionSeries[k]; sM += clampedMagnitudeSeries[k]; sP += powerSeries[k]
                 sD += densitySeries[k]; lastV = k; count++; k++
             }
             if (count > 0) {

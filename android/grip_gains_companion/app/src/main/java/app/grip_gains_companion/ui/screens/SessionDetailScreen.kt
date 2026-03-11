@@ -33,13 +33,11 @@ import java.util.*
 fun SessionDetailScreen(
     sessionId: Long,
     rawRepository: RawSessionRepository,
-    recentMuscles: List<String>, // <--- 1. ADD THIS PARAMETER
+    recentMuscles: List<String>,
     onBack: () -> Unit
 ) {
     val focusManager = LocalFocusManager.current
     val session by rawRepository.getSessionById(sessionId).collectAsState(initial = null)
-
-    // <--- 2. WE DELETED THE TWO FAILING DATABASE LINES FROM HERE
 
     val coroutineScope = rememberCoroutineScope()
 
@@ -166,23 +164,30 @@ fun SessionDetailScreen(
                                     }
                                 )
 
-                                val filteredOptions = recentMuscles.filter { it.contains(editMuscle, true) && !it.equals(editMuscle, true) }
+                                val filteredOptions = if (editMuscle.isEmpty()) {
+                                    emptyList()
+                                } else {
+                                    recentMuscles.filter { it.contains(editMuscle, ignoreCase = true) && !it.equals(editMuscle, ignoreCase = true) }
+                                }
 
                                 AnimatedVisibility(
-                                    visible = editMuscle.isNotEmpty() && filteredOptions.isNotEmpty(),
-                                    enter = expandVertically(animationSpec = tween(300)) + fadeIn(),
-                                    exit = shrinkVertically(animationSpec = tween(300)) + fadeOut()
+                                    visible = filteredOptions.isNotEmpty(),
+                                    enter = expandVertically(animationSpec = tween(300)) + fadeIn(tween(300)),
+                                    exit = shrinkVertically(animationSpec = tween(300)) + fadeOut(tween(300))
                                 ) {
-                                    Card(
+                                    ElevatedCard(
                                         modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                                        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                                        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                                        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 8.dp)
                                     ) {
-                                        Column {
-                                            filteredOptions.take(3).forEach { muscle ->
+                                        Column(modifier = Modifier.fillMaxWidth()) {
+                                            filteredOptions.take(5).forEach { muscle ->
                                                 ListItem(
                                                     headlineContent = { Text(muscle, fontWeight = FontWeight.Bold) },
-                                                    modifier = Modifier.clickable { editMuscle = muscle; focusManager.clearFocus() },
+                                                    modifier = Modifier.clickable {
+                                                        editMuscle = muscle
+                                                        focusManager.clearFocus()
+                                                    },
                                                     colors = ListItemDefaults.colors(containerColor = Color.Transparent)
                                                 )
                                             }

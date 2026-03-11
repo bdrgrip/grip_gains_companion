@@ -101,24 +101,31 @@ fun RawSummaryScreen(
                                 keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() })
                             )
 
-                            val filteredOptions = recentMuscles.filter { it.contains(targetMuscle, true) && !it.equals(targetMuscle, true) }
+                            val filteredOptions = if (targetMuscle.isEmpty()) {
+                                emptyList()
+                            } else {
+                                recentMuscles.filter { it.contains(targetMuscle, ignoreCase = true) && !it.equals(targetMuscle, ignoreCase = true) }
+                            }
 
                             AnimatedVisibility(
-                                visible = targetMuscle.isNotEmpty() && filteredOptions.isNotEmpty(),
-                                enter = expandVertically(animationSpec = tween(300)) + fadeIn(),
-                                exit = shrinkVertically(animationSpec = tween(300)) + fadeOut()
+                                visible = filteredOptions.isNotEmpty(),
+                                enter = expandVertically(animationSpec = tween(300)) + fadeIn(tween(300)),
+                                exit = shrinkVertically(animationSpec = tween(300)) + fadeOut(tween(300))
                             ) {
-                                Card(
+                                ElevatedCard(
                                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                                     shape = RoundedCornerShape(16.dp),
-                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                                    colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                                    elevation = CardDefaults.elevatedCardElevation(defaultElevation = 8.dp)
                                 ) {
-                                    Column {
-                                        filteredOptions.take(4).forEach { muscle ->
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        filteredOptions.take(5).forEach { muscle ->
                                             ListItem(
                                                 headlineContent = { Text(muscle, fontWeight = FontWeight.Bold) },
-                                                modifier = Modifier.clickable { targetMuscle = muscle; focusManager.clearFocus() },
+                                                modifier = Modifier.clickable {
+                                                    targetMuscle = muscle
+                                                    focusManager.clearFocus()
+                                                },
                                                 colors = ListItemDefaults.colors(containerColor = Color.Transparent)
                                             )
                                         }
@@ -161,8 +168,6 @@ fun RawSummaryScreen(
     }
 }
 
-// ... GLOBALLY SHARED UI COMPONENTS BELOW STAY EXACTLY THE SAME ...
-
 @Composable
 fun RawDashboardCard(score: Int, tut: Double, work: Int, reps: Int, cadence: Double) {
     Card(
@@ -182,10 +187,10 @@ fun RawDashboardCard(score: Int, tut: Double, work: Int, reps: Int, cadence: Dou
             )
             Spacer(modifier = Modifier.height(16.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                RawMetricItem("TUT", "${String.format("%.1f", tut)}s")
+                RawMetricItem("TUT", "${String.format(java.util.Locale.US, "%.1f", tut)}s")
                 RawMetricItem("Work", "$work")
                 if (reps > 1 && !cadence.isNaN() && !cadence.isInfinite()) {
-                    RawMetricItem("Cadence", "${String.format("%.1f", cadence)}s")
+                    RawMetricItem("Cadence", "${String.format(java.util.Locale.US, "%.1f", cadence)}s")
                 }
                 RawMetricItem("Reps", "$reps")
             }
@@ -253,7 +258,7 @@ private fun SummarySideButton(label: String, current: String, modifier: Modifier
 private fun SummaryGraphCard(title: String, legends: List<Pair<String, Color>>, content: @Composable () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp), // ADD THIS
+        shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
     ) {
         Column(modifier = Modifier.padding(16.dp)) {

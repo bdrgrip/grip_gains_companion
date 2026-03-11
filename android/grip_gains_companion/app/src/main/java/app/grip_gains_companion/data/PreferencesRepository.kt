@@ -78,8 +78,8 @@ class PreferencesRepository(private val context: Context) {
         val SHOW_RAW_SUMMARY = booleanPreferencesKey("show_raw_summary")
     }
 
-    // --- NEW TOGGLE FIXED ---
-    val enableIsotonicMode: Flow<Boolean> = context.dataStore.data.map { it[Keys.ENABLE_ISOTONIC_MODE] ?: true }
+    // --- REQUESTED DEFAULT: ISOTONIC MODE OFF ---
+    val enableIsotonicMode: Flow<Boolean> = context.dataStore.data.map { it[Keys.ENABLE_ISOTONIC_MODE] ?: false }
     suspend fun setEnableIsotonicMode(value: Boolean) = context.dataStore.edit { it[Keys.ENABLE_ISOTONIC_MODE] = value }
 
     // --- ANALYTICS PREFERENCES ---
@@ -104,6 +104,7 @@ class PreferencesRepository(private val context: Context) {
         it[Keys.SHOW_RAW_SUMMARY] = value
     }
 
+    // --- REQUESTED DEFAULT: AUTO FAIL REP OFF ---
     val autoFailRep: Flow<Boolean> = context.dataStore.data.map { it[Keys.AUTO_FAIL_REP] ?: false }
     suspend fun setAutoFailRep(value: Boolean) = context.dataStore.edit { it[Keys.AUTO_FAIL_REP] = value }
 
@@ -114,14 +115,15 @@ class PreferencesRepository(private val context: Context) {
     val useLbs: Flow<Boolean> = context.dataStore.data.map { it[Keys.USE_LBS] ?: false }
     suspend fun setUseLbs(value: Boolean) = context.dataStore.edit { it[Keys.USE_LBS] = value }
 
-    // Feedback preferences
+    // --- REQUESTED DEFAULT: HAPTIC FEEDBACK OFF ---
     val enableHaptics: Flow<Boolean> = context.dataStore.data.map {
-        it[Keys.ENABLE_HAPTICS] ?: AppConstants.DEFAULT_ENABLE_HAPTICS
+        it[Keys.ENABLE_HAPTICS] ?: false
     }
     suspend fun setEnableHaptics(value: Boolean) = context.dataStore.edit { it[Keys.ENABLE_HAPTICS] = value }
 
+    // --- REQUESTED DEFAULT: TARGET SOUNDS OFF ---
     val enableTargetSound: Flow<Boolean> = context.dataStore.data.map {
-        it[Keys.ENABLE_TARGET_SOUND] ?: AppConstants.DEFAULT_ENABLE_TARGET_SOUND
+        it[Keys.ENABLE_TARGET_SOUND] ?: false
     }
     suspend fun setEnableTargetSound(value: Boolean) = context.dataStore.edit { it[Keys.ENABLE_TARGET_SOUND] = value }
 
@@ -228,9 +230,9 @@ class PreferencesRepository(private val context: Context) {
     val toleranceCeiling: Flow<Double> = context.dataStore.data.map { it[Keys.TOLERANCE_CEILING] ?: AppConstants.DEFAULT_TOLERANCE_CEILING }
     suspend fun setToleranceCeiling(value: Double) = context.dataStore.edit { it[Keys.TOLERANCE_CEILING] = value }
 
-    // Experimental features
+    // --- REQUESTED DEFAULT: BACKGROUND TIME SYNC ON ---
     val backgroundTimeSync: Flow<Boolean> = context.dataStore.data.map {
-        it[Keys.BACKGROUND_TIME_SYNC] ?: AppConstants.DEFAULT_BACKGROUND_TIME_SYNC
+        it[Keys.BACKGROUND_TIME_SYNC] ?: true
     }
     suspend fun setBackgroundTimeSync(value: Boolean) = context.dataStore.edit { it[Keys.BACKGROUND_TIME_SYNC] = value }
 
@@ -260,9 +262,9 @@ class PreferencesRepository(private val context: Context) {
     }
     suspend fun setShowSetReview(value: Boolean) = context.dataStore.edit { it[Keys.SHOW_SET_REVIEW] = value }
 
-    // Early fail preferences
+    // --- REQUESTED DEFAULT: ABORT FATIGUED SESSION OFF ---
     val enableEndSessionOnEarlyFail: Flow<Boolean> = context.dataStore.data.map {
-        it[Keys.ENABLE_END_SESSION_ON_EARLY_FAIL] ?: AppConstants.DEFAULT_ENABLE_END_SESSION_ON_EARLY_FAIL
+        it[Keys.ENABLE_END_SESSION_ON_EARLY_FAIL] ?: false
     }
     suspend fun setEnableEndSessionOnEarlyFail(value: Boolean) = context.dataStore.edit { it[Keys.ENABLE_END_SESSION_ON_EARLY_FAIL] = value }
 

@@ -22,6 +22,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.grip_gains_companion.config.AppConstants
 import app.grip_gains_companion.database.SessionRepository
 import kotlinx.coroutines.launch
@@ -35,6 +36,7 @@ fun IsoSessionDetailScreen(
     sessionId: String,
     sessionRepository: SessionRepository,
     useLbs: Boolean,
+    recentEquipment: List<String>,
     onBack: () -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
@@ -42,8 +44,6 @@ fun IsoSessionDetailScreen(
 
     val session by sessionRepository.getIsoSessionById(sessionId).collectAsState(initial = null)
     val reps by sessionRepository.getIsoRepsForSession(sessionId).collectAsState(initial = emptyList())
-    val allIsoSessions by sessionRepository.getAllIsoSessions().collectAsState(initial = emptyList())
-    val recentEquipment = remember(allIsoSessions) { allIsoSessions.map { it.gripperType }.distinct().sorted() }
 
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showEditDialog by remember { mutableStateOf(false) }
@@ -61,13 +61,15 @@ fun IsoSessionDetailScreen(
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
                 },
                 actions = {
-                    IconButton(onClick = {
-                        session?.let {
-                            editEquipment = it.gripperType
-                            editSide = it.side
-                            showEditDialog = true
-                        }
-                    }) { Icon(Icons.Default.Edit, contentDescription = "Edit") }
+                    if (!showEditDialog) {
+                        IconButton(onClick = {
+                            session?.let {
+                                editEquipment = it.gripperType
+                                editSide = it.side
+                                showEditDialog = true
+                            }
+                        }) { Icon(Icons.Default.Edit, contentDescription = "Edit") }
+                    }
 
                     IconButton(onClick = { showDeleteConfirm = true }) {
                         Icon(Icons.Default.Delete, contentDescription = "Delete Session", tint = MaterialTheme.colorScheme.error)
@@ -91,30 +93,187 @@ fun IsoSessionDetailScreen(
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(24.dp)
             ) {
-                item {
-                    ElevatedCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(32.dp),
-                        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-                        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 8.dp)
-                    ) {
-                        Column(modifier = Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(formatter.format(Date(session!!.timestamp)), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f))
-                            Text("${session!!.gripperType} - ${session!!.side}", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                if (showEditDialog) {
+                    item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp).animateContentSize()) {
+                                Text("Edit Details", style = MaterialTheme.typography.titleMedium)
 
-                            Spacer(modifier = Modifier.height(24.dp))
+                                // --- SMART AUTOCOMPLETE ---
+                                Column(modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) {
+                                    OutlinedTextField(
+                                        value = editEquipment,
+                                        onValueChange = { editEquipment = it },
+                                        label = { Text("Equipment (e.g. Micro)") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                        shape = RoundedCornerShape(12.dp),
+                                        trailingIcon = {
+                                            if (editEquipment.isNotEmpty()) {
+                                                IconButton(onClick = { editEquipment = ""; focusManager.clearFocus() }) { Icon(Icons.Default.Clear, "Clear") }
+                                            }
+                                        }
+                                    )
 
-                            val targetWeightText = if (firstTargetWeight != null) {
-                                String.format("%.1f", if (useLbs) firstTargetWeight * AppConstants.KG_TO_LBS else firstTargetWeight)
-                            } else "-"
+                                    val filteredOptions = if (editEquipment.isEmpty()) {
+                                        emptyList()
+                                    } else {
+                                        recentEquipment.filter { it.contains(editEquipment, ignoreCase = true) && !it.equals(editEquipment, ignoreCase = true) }
+                                    }
 
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                                MetricItem("Reps", "${reps.size}")
-                                MetricItem("Duration", "${String.format("%.1f", totalDuration)}s")
-                                MetricItem("Target", targetWeightText)
+                                    var cachedOptions by remember { mutableStateOf(emptyList<String>()) }
+                                    LaunchedEffect(filteredOptions) {
+                                        if (filteredOptions.isNotEmpty()) {
+                                            cachedOptions = filteredOptions
+                                        }
+                                    }
+
+                                    AnimatedVisibility(
+                                        visible = filteredOptions.isNotEmpty(),
+                                        enter = expandVertically(animationSpec = tween(300)) + fadeIn(tween(300)),
+                                        exit = shrinkVertically(animationSpec = tween(300)) + fadeOut(tween(300))
+                                    ) {
+                                        ElevatedCard(
+                                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                                            colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                                            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 8.dp)
+                                        ) {
+                                            Column(modifier = Modifier.fillMaxWidth()) {
+                                                cachedOptions.take(5).forEach { eq ->
+                                                    ListItem(
+                                                        headlineContent = { Text(eq, fontWeight = FontWeight.Bold) },
+                                                        modifier = Modifier.clickable {
+                                                            editEquipment = eq
+                                                            focusManager.clearFocus()
+                                                        },
+                                                        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Column(modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) {
+                                    Text("Side", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(bottom = 8.dp))
+
+                                    // FIX: Make the inactive buttons transparent so they don't look jet-black
+                                    val segColors = SegmentedButtonDefaults.colors(
+                                        inactiveContainerColor = Color.Transparent,
+                                        activeContainerColor = MaterialTheme.colorScheme.primaryContainer
+                                    )
+                                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                                        SegmentedButton(
+                                            selected = editSide == "Left",
+                                            onClick = { editSide = "Left" },
+                                            shape = SegmentedButtonDefaults.itemShape(index = 0, count = 3),
+                                            colors = segColors
+                                        ) { Text("Left") }
+                                        SegmentedButton(
+                                            selected = editSide == "Bilateral",
+                                            onClick = { editSide = "Bilateral" },
+                                            shape = SegmentedButtonDefaults.itemShape(index = 1, count = 3),
+                                            colors = segColors
+                                        ) { Text("Bilateral") }
+                                        SegmentedButton(
+                                            selected = editSide == "Right",
+                                            onClick = { editSide = "Right" },
+                                            shape = SegmentedButtonDefaults.itemShape(index = 2, count = 3),
+                                            colors = segColors
+                                        ) { Text("Right") }
+                                    }
+                                }
+
+                                // --- ANIMATED REVERT BOX ---
+                                val scrapedEquip = session?.scrapedGripper
+                                val scrapedSide = session?.scrapedSide
+                                val hasScrapedData = !scrapedEquip.isNullOrBlank()
+                                val isDifferentFromScraped = editEquipment != scrapedEquip || editSide != scrapedSide
+
+                                AnimatedVisibility(
+                                    visible = hasScrapedData && isDifferentFromScraped,
+                                    enter = expandVertically(animationSpec = tween(300)) + fadeIn(tween(300)),
+                                    exit = shrinkVertically(animationSpec = tween(300)) + fadeOut(tween(300))
+                                ) {
+                                    Surface(
+                                        onClick = {
+                                            editEquipment = scrapedEquip ?: ""
+                                            editSide = scrapedSide ?: "Bilateral"
+                                            focusManager.clearFocus()
+                                        },
+                                        color = MaterialTheme.colorScheme.secondaryContainer,
+                                        shape = MaterialTheme.shapes.small,
+                                        // Top padding inside the visibility block shrinks seamlessly
+                                        modifier = Modifier.fillMaxWidth().padding(top = 16.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.Center
+                                        ) {
+                                            Icon(Icons.Default.Restore, contentDescription = "Revert", modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = "Revert to: $scrapedEquip ($scrapedSide)",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                                    horizontalArrangement = Arrangement.End,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    TextButton(onClick = { showEditDialog = false }) { Text("Cancel") }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Button(onClick = {
+                                        coroutineScope.launch {
+                                            session?.let {
+                                                sessionRepository.insertIsoSession(it.copy(gripperType = editEquipment, side = editSide))
+                                                showEditDialog = false
+                                            }
+                                        }
+                                    }) { Text("Save") }
+                                }
                             }
                         }
                     }
+                } else {
+                    item {
+                        ElevatedCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(32.dp),
+                            colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 8.dp)
+                        ) {
+                            Column(modifier = Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(formatter.format(Date(session!!.timestamp)), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f))
+                                Text("${session!!.gripperType} - ${session!!.side}", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+
+                                Spacer(modifier = Modifier.height(24.dp))
+
+                                val targetWeightText = if (firstTargetWeight != null) {
+                                    String.format(Locale.US, "%.1f", if (useLbs) firstTargetWeight * AppConstants.KG_TO_LBS else firstTargetWeight)
+                                } else "-"
+
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                                    MetricItem("Reps", "${reps.size}")
+                                    MetricItem("Duration", "${String.format(Locale.US, "%.1f", totalDuration)}s")
+                                    MetricItem("Target", targetWeightText)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                item {
+                    Text("Reps (${reps.size})", style = MaterialTheme.typography.titleMedium)
                 }
 
                 itemsIndexed(reps) { index, rep ->
@@ -141,124 +300,6 @@ fun IsoSessionDetailScreen(
                     ) { Text("Delete") }
                 },
                 dismissButton = { TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") } }
-            )
-        }
-
-        if (showEditDialog) {
-            AlertDialog(
-                onDismissRequest = { showEditDialog = false },
-                title = { Text("Edit Isometric Session") },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-
-                        // --- EQUIPMENT EDIT ---
-                        Column(modifier = Modifier.fillMaxWidth().animateContentSize(animationSpec = tween(200))) {
-                            OutlinedTextField(
-                                value = editEquipment,
-                                onValueChange = { editEquipment = it },
-                                label = { Text("Equipment (e.g. Micro)") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                                trailingIcon = {
-                                    if (editEquipment.isNotEmpty()) {
-                                        IconButton(onClick = { editEquipment = ""; focusManager.clearFocus() }) { Icon(Icons.Default.Clear, "Clear") }
-                                    }
-                                },
-                            )
-
-                            // Revert Equipment Chip
-                            val scrapedEquip = session?.scrapedGripper
-                            AnimatedVisibility(
-                                visible = !scrapedEquip.isNullOrBlank() && scrapedEquip != editEquipment,
-                                enter = fadeIn(tween(200)),
-                                exit = fadeOut(tween(150))
-                            ) {
-                                Column {
-                                    AssistChip(
-                                        onClick = { editEquipment = scrapedEquip ?: ""; focusManager.clearFocus() },
-                                        label = { Text("Revert to: $scrapedEquip") },
-                                        leadingIcon = { Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(16.dp)) },
-                                        colors = AssistChipDefaults.assistChipColors(
-                                            containerColor = MaterialTheme.colorScheme.primaryContainer,
-                                            labelColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                                            leadingIconContentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                        ),
-                                        modifier = Modifier.padding(top = 4.dp)
-                                    )
-                                }
-                            }
-
-                            val filteredOptions = recentEquipment.filter { it.contains(editEquipment, true) && !it.equals(editEquipment, true) }
-                            AnimatedVisibility(
-                                visible = editEquipment.isNotEmpty() && filteredOptions.isNotEmpty(),
-                                enter = expandVertically(animationSpec = tween(300)) + fadeIn(),
-                                exit = shrinkVertically(animationSpec = tween(300)) + fadeOut()
-                            ) {
-                                Card(
-                                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
-                                ) {
-                                    Column {
-                                        filteredOptions.take(3).forEach { equipment ->
-                                            ListItem(
-                                                headlineContent = { Text(equipment, fontWeight = FontWeight.Bold) },
-                                                modifier = Modifier.clickable { editEquipment = equipment; focusManager.clearFocus() },
-                                                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        // --- SIDE EDIT ---
-                        // Wrap the side section in its own animated content block
-                        Column(modifier = Modifier.fillMaxWidth().animateContentSize(animationSpec = tween(200))) {
-                            Text("Side", style = MaterialTheme.typography.labelMedium)
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                FilterChip(selected = editSide == "Left", onClick = { editSide = "Left" }, label = { Text("Left") })
-                                FilterChip(selected = editSide == "Bilateral", onClick = { editSide = "Bilateral" }, label = { Text("Bilateral") })
-                                FilterChip(selected = editSide == "Right", onClick = { editSide = "Right" }, label = { Text("Right") })
-                            }
-
-                            // Revert Side Chip
-                            val scrapedS = session?.scrapedSide
-                            AnimatedVisibility(
-                                visible = !scrapedS.isNullOrBlank() && scrapedS != editSide,
-                                enter = fadeIn(tween(200)),
-                                exit = fadeOut(tween(150))
-                            ) {
-                                Column {
-                                    AssistChip(
-                                        onClick = { editSide = scrapedS ?: "" },
-                                        label = { Text("Revert side to: $scrapedS") },
-                                        leadingIcon = { Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(16.dp)) },
-                                        colors = AssistChipDefaults.assistChipColors(
-                                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                            labelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                                            leadingIconContentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                                        ),
-                                        modifier = Modifier.padding(top = 4.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                },
-                confirmButton = {
-                    Button(onClick = {
-                        coroutineScope.launch {
-                            session?.let {
-                                sessionRepository.insertIsoSession(it.copy(gripperType = editEquipment, side = editSide))
-                                showEditDialog = false
-                            }
-                        }
-                    }) { Text("Save") }
-                },
-                dismissButton = { TextButton(onClick = { showEditDialog = false }) { Text("Cancel") } }
             )
         }
     }

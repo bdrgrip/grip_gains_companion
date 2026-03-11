@@ -16,65 +16,65 @@ import java.util.Date
  * State machine for processing Tindeq Progressor force samples
  */
 class ProgressorHandler {
-    
+
     // MARK: - Published State
-    
+
     private val _state = MutableStateFlow<ProgressorState>(ProgressorState.WaitingForSamples)
     val state: StateFlow<ProgressorState> = _state.asStateFlow()
-    
+
     private val _currentForce = MutableStateFlow(0.0)
     val currentForce: StateFlow<Double> = _currentForce.asStateFlow()
-    
+
     private val _calibrationTimeRemaining = MutableStateFlow(AppConstants.CALIBRATION_DURATION_MS)
     val calibrationTimeRemaining: StateFlow<Long> = _calibrationTimeRemaining.asStateFlow()
-    
+
     private val _weightMedian = MutableStateFlow<Double?>(null)
     val weightMedian: StateFlow<Double?> = _weightMedian.asStateFlow()
-    
+
     private val _sessionMean = MutableStateFlow<Double?>(null)
     val sessionMean: StateFlow<Double?> = _sessionMean.asStateFlow()
-    
+
     private val _sessionStdDev = MutableStateFlow<Double?>(null)
     val sessionStdDev: StateFlow<Double?> = _sessionStdDev.asStateFlow()
-    
+
     private val _forceHistory = MutableStateFlow<List<ForceHistoryEntry>>(emptyList())
     val forceHistory: StateFlow<List<ForceHistoryEntry>> = _forceHistory.asStateFlow()
-    
+
     private val _isOffTarget = MutableStateFlow(false)
     val isOffTarget: StateFlow<Boolean> = _isOffTarget.asStateFlow()
-    
+
     private val _offTargetDirection = MutableStateFlow<Double?>(null)
     val offTargetDirection: StateFlow<Double?> = _offTargetDirection.asStateFlow()
-    
+
     // MARK: - Events (SharedFlow for one-shot events)
-    
+
     private val _calibrationCompleted = MutableSharedFlow<Unit>()
     val calibrationCompleted = _calibrationCompleted.asSharedFlow()
-    
+
     private val _gripFailed = MutableSharedFlow<Unit>()
     val gripFailed = _gripFailed.asSharedFlow()
-    
+
     private val _gripDisengaged = MutableSharedFlow<Pair<Double, List<Double>>>()
     val gripDisengaged = _gripDisengaged.asSharedFlow()
-    
+
     private val _offTargetChanged = MutableSharedFlow<Pair<Boolean, Double?>>()
     val offTargetChanged = _offTargetChanged.asSharedFlow()
-    
+
     // MARK: - External Input
-    
+
     var canEngage: Boolean = false
     var enableCalibration: Boolean = true
     var engageThreshold: Double = AppConstants.DEFAULT_ENGAGE_THRESHOLD
     var failThreshold: Double = AppConstants.DEFAULT_FAIL_THRESHOLD
     var targetWeight: Double? = null
     var weightTolerance: Double = AppConstants.DEFAULT_WEIGHT_TOLERANCE
-    
+
     // Percentage-based thresholds
     var enablePercentageThresholds: Boolean = AppConstants.DEFAULT_ENABLE_PERCENTAGE_THRESHOLDS
     var engagePercentage: Double = AppConstants.DEFAULT_ENGAGE_PERCENTAGE
     var disengagePercentage: Double = AppConstants.DEFAULT_DISENGAGE_PERCENTAGE
     var tolerancePercentage: Double = AppConstants.DEFAULT_TOLERANCE_PERCENTAGE
-    
+
     // Percentage threshold bounds
     var engageFloor: Double = AppConstants.DEFAULT_ENGAGE_FLOOR
     var engageCeiling: Double = AppConstants.DEFAULT_ENGAGE_CEILING
@@ -82,20 +82,18 @@ class ProgressorHandler {
     var disengageCeiling: Double = AppConstants.DEFAULT_DISENGAGE_CEILING
     var toleranceFloor: Double = AppConstants.DEFAULT_TOLERANCE_FLOOR
     var toleranceCeiling: Double = AppConstants.DEFAULT_TOLERANCE_CEILING
-    
+
     var weightCalibrationThreshold: Double = AppConstants.DEFAULT_WEIGHT_CALIBRATION_THRESHOLD
-    
+
     // Internal state
     private var lastTimestamp: Long = 0
-    private var firstDeviceTimestamp: Long? = null
-    private var firstDisplayTimestamp: Date? = null
     private var offTargetTimerRunning = false
-    
+
     // Convenience properties
     val engaged: Boolean get() = _state.value.isEngaged
     val calibrating: Boolean get() = _state.value.isCalibrating
     val waitingForSamples: Boolean get() = _state.value.isWaitingForSamples
-    
+
     val gripElapsedSeconds: Int
         get() {
             val currentState = _state.value
@@ -103,14 +101,14 @@ class ProgressorHandler {
                 ((lastTimestamp - currentState.startTimestamp) / 1_000_000).toInt()
             } else 0
         }
-    
+
     // MARK: - Effective Thresholds
-    
+
     private fun applyBounds(value: Double, floor: Double, ceiling: Double): Double {
         val floored = if (floor > 0) maxOf(value, floor) else value
         return if (ceiling > 0) minOf(floored, ceiling) else floored
     }
-    
+
     private val effectiveEngageThreshold: Double
         get() {
             if (enablePercentageThresholds) {
@@ -120,7 +118,7 @@ class ProgressorHandler {
             }
             return engageThreshold
         }
-    
+
     private val effectiveFailThreshold: Double
         get() {
             if (enablePercentageThresholds) {
@@ -130,7 +128,7 @@ class ProgressorHandler {
             }
             return failThreshold
         }
-    
+
     private val effectiveTolerance: Double
         get() {
             if (enablePercentageThresholds) {
@@ -140,39 +138,18 @@ class ProgressorHandler {
             }
             return weightTolerance
         }
-    
+
     // MARK: - Public Methods
-    
+
     /**
      * Process a single force sample from the BLE device
      */
     suspend fun processSample(rawWeight: Double, timestamp: Long) {
         lastTimestamp = timestamp
-        
-        // Calculate display timestamp
-        val displayTimestamp: Date
-        val firstDevice = firstDeviceTimestamp
-        val firstDisplay = firstDisplayTimestamp
-        
-        if (firstDevice != null && firstDisplay != null) {
-            if (timestamp < firstDevice) {
-                // Device timestamp reset (e.g., after BLE reconnection) - re-anchor
-                firstDeviceTimestamp = timestamp
-                firstDisplayTimestamp = Date()
-                displayTimestamp = firstDisplayTimestamp!!
-            } else {
-                val offsetMicros = timestamp - firstDevice
-                displayTimestamp = Date(firstDisplay.time + offsetMicros / 1000)
-            }
-        } else {
-            firstDeviceTimestamp = timestamp
-            firstDisplayTimestamp = Date()
-            displayTimestamp = firstDisplayTimestamp!!
-        }
-        
+
         // Process state transition first (may establish/update baseline)
         processStateTransition(rawWeight, timestamp)
-        
+
         // Compute tared weight for display based on current state's baseline
         val baseline = when (val s = _state.value) {
             is ProgressorState.Idle -> s.baselineValue
@@ -181,16 +158,16 @@ class ProgressorHandler {
             else -> null
         }
         val displayWeight = if (baseline != null) rawWeight - baseline else rawWeight
-        
+
         // Update published force with tared value
         _currentForce.value = displayWeight
-        
-        // Update force history with tared value
+
+        // Update force history with tared value using phone's ABSOLUTE clock for butter-smooth graph scrolling!
         val newHistory = _forceHistory.value.toMutableList()
-        newHistory.add(ForceHistoryEntry(displayTimestamp, displayWeight))
+        newHistory.add(ForceHistoryEntry(Date(System.currentTimeMillis()), displayWeight))
         _forceHistory.value = newHistory
     }
-    
+
     /**
      * Reset handler state for a new session
      */
@@ -198,14 +175,14 @@ class ProgressorHandler {
         resetCommonState()
         _currentForce.value = 0.0
     }
-    
+
     /**
      * Trigger recalibration
      */
     fun recalibrate() {
         resetCommonState()
     }
-    
+
     private fun resetCommonState() {
         stopOffTargetTimer()
         _state.value = ProgressorState.WaitingForSamples
@@ -216,15 +193,13 @@ class ProgressorHandler {
         _sessionMean.value = null
         _sessionStdDev.value = null
         _forceHistory.value = emptyList()
-        firstDeviceTimestamp = null
-        firstDisplayTimestamp = null
     }
-    
+
     // MARK: - State Machine Logic
-    
+
     private suspend fun processStateTransition(rawWeight: Double, timestamp: Long) {
         val sample = TimestampedSample(rawWeight, timestamp)
-        
+
         when (val currentState = _state.value) {
             is ProgressorState.WaitingForSamples -> {
                 // Don't clear force history if we already have some (preserves graph during reconnection)
@@ -243,12 +218,12 @@ class ProgressorHandler {
                     _calibrationCompleted.emit(Unit)
                 }
             }
-            
+
             is ProgressorState.Calibrating -> {
                 val newSamples = currentState.samples + sample
                 val elapsed = System.currentTimeMillis() - currentState.startTimeMs
                 _calibrationTimeRemaining.value = maxOf(0, AppConstants.CALIBRATION_DURATION_MS - elapsed)
-                
+
                 if (elapsed >= AppConstants.CALIBRATION_DURATION_MS) {
                     val baselineAvg = newSamples.map { it.weight }.average()
                     _state.value = ProgressorState.Idle(baselineAvg)
@@ -258,21 +233,21 @@ class ProgressorHandler {
                     _state.value = ProgressorState.Calibrating(currentState.startTimeMs, newSamples)
                 }
             }
-            
+
             is ProgressorState.Idle -> {
                 val taredWeight = rawWeight - currentState.baselineValue
                 handleIdleState(rawWeight, taredWeight, currentState.baselineValue, timestamp)
             }
-            
+
             is ProgressorState.Gripping -> {
                 val newSamples = currentState.samples + sample
                 val taredWeight = rawWeight - currentState.baselineValue
-                
+
                 // Calculate live statistics using tared weights
                 val taredWeights = newSamples.map { it.weight - currentState.baselineValue }
                 _sessionMean.value = StatisticsUtils.mean(taredWeights)
                 _sessionStdDev.value = StatisticsUtils.standardDeviation(taredWeights)
-                
+
                 if (taredWeight < effectiveFailThreshold) {
                     // Grip failed
                     stopOffTargetTimer()
@@ -291,7 +266,7 @@ class ProgressorHandler {
                     checkOffTarget(taredWeight)
                 }
             }
-            
+
             is ProgressorState.WeightCalibration -> {
                 val taredWeight = rawWeight - currentState.baselineValue
                 handleWeightCalibrationState(
@@ -301,7 +276,7 @@ class ProgressorHandler {
             }
         }
     }
-    
+
     private suspend fun handleIdleState(
         rawWeight: Double,
         taredWeight: Double,
@@ -309,7 +284,7 @@ class ProgressorHandler {
         timestamp: Long
     ) {
         val sample = TimestampedSample(rawWeight, timestamp)
-        
+
         if (canEngage && taredWeight >= effectiveEngageThreshold) {
             // Start real grip session
             _weightMedian.value = null
@@ -320,7 +295,7 @@ class ProgressorHandler {
             _weightMedian.value = taredWeight
         }
     }
-    
+
     private fun handleWeightCalibrationState(
         rawWeight: Double,
         taredWeight: Double,
@@ -330,7 +305,7 @@ class ProgressorHandler {
         timestamp: Long
     ) {
         val sample = TimestampedSample(rawWeight, timestamp)
-        
+
         if (canEngage && taredWeight >= effectiveEngageThreshold) {
             // Switch to real grip session
             _weightMedian.value = null
@@ -355,9 +330,9 @@ class ProgressorHandler {
             _state.value = ProgressorState.Idle(baseline)
         }
     }
-    
+
     // MARK: - Target Weight Checking
-    
+
     private suspend fun checkOffTarget(rawWeight: Double) {
         val target = targetWeight ?: run {
             stopOffTargetTimer()
@@ -368,10 +343,10 @@ class ProgressorHandler {
             }
             return
         }
-        
+
         val difference = rawWeight - target
         val wasOffTarget = _isOffTarget.value
-        
+
         if (kotlin.math.abs(difference) >= effectiveTolerance) {
             _isOffTarget.value = true
             _offTargetDirection.value = difference
@@ -388,7 +363,7 @@ class ProgressorHandler {
             }
         }
     }
-    
+
     private fun stopOffTargetTimer() {
         offTargetTimerRunning = false
     }

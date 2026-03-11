@@ -13,6 +13,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -51,8 +52,11 @@ fun IsoSummaryScreen(
     val firstTargetWeight = reps.firstOrNull { it.targetWeight != null }?.targetWeight
 
     val targetWeightText = if (firstTargetWeight != null) {
-        String.format("%.1f", if (useLbs) firstTargetWeight * AppConstants.KG_TO_LBS else firstTargetWeight)
+        String.format(java.util.Locale.US, "%.1f", if (useLbs) firstTargetWeight * AppConstants.KG_TO_LBS else firstTargetWeight)
     } else "-"
+
+    val hasScrapedData = initialGripper.isNotBlank()
+    val isModified = hasScrapedData && (targetGripper != initialGripper || bodySide != initialSide)
 
     Scaffold(
         topBar = { CenterAlignedTopAppBar(title = { Text("Session Complete", fontWeight = FontWeight.Bold) }) },
@@ -88,7 +92,7 @@ fun IsoSummaryScreen(
                         Spacer(modifier = Modifier.height(16.dp))
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                             MetricItem("Reps", "${reps.size}")
-                            MetricItem("Duration", "${String.format("%.1f", totalDuration)}s")
+                            MetricItem("Duration", "${String.format(java.util.Locale.US, "%.1f", totalDuration)}s")
                             MetricItem("Target", targetWeightText)
                         }
                     }
@@ -100,7 +104,8 @@ fun IsoSummaryScreen(
                     modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
                 ) {
-                    Column(modifier = Modifier.padding(24.dp)) {
+                    // FIX: Parent column gets animateContentSize() to stop the snap!
+                    Column(modifier = Modifier.padding(24.dp).animateContentSize()) {
 
                         // --- INLINE AUTOCOMPLETE ---
                         Column(modifier = Modifier.fillMaxWidth()) {
@@ -120,24 +125,38 @@ fun IsoSummaryScreen(
                                 keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() })
                             )
 
-                            val filteredOptions = recentEquipment.filter { it.contains(targetGripper, true) && !it.equals(targetGripper, true) }
+                            val filteredOptions = if (targetGripper.isEmpty()) {
+                                emptyList()
+                            } else {
+                                recentEquipment.filter { it.contains(targetGripper, ignoreCase = true) && !it.equals(targetGripper, ignoreCase = true) }
+                            }
+
+                            var cachedOptions by remember { mutableStateOf(emptyList<String>()) }
+                            LaunchedEffect(filteredOptions) {
+                                if (filteredOptions.isNotEmpty()) {
+                                    cachedOptions = filteredOptions
+                                }
+                            }
 
                             AnimatedVisibility(
-                                visible = targetGripper.isNotEmpty() && filteredOptions.isNotEmpty(),
-                                enter = expandVertically(animationSpec = tween(300)) + fadeIn(),
-                                exit = shrinkVertically(animationSpec = tween(300)) + fadeOut()
+                                visible = filteredOptions.isNotEmpty(),
+                                enter = expandVertically(animationSpec = tween(300)) + fadeIn(tween(300)),
+                                exit = shrinkVertically(animationSpec = tween(300)) + fadeOut(tween(300))
                             ) {
-                                Card(
+                                ElevatedCard(
                                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                                     shape = RoundedCornerShape(16.dp),
-                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                                    colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                                    elevation = CardDefaults.elevatedCardElevation(defaultElevation = 8.dp)
                                 ) {
-                                    Column {
-                                        filteredOptions.take(4).forEach { equipment ->
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        cachedOptions.take(4).forEach { equipment ->
                                             ListItem(
                                                 headlineContent = { Text(equipment, fontWeight = FontWeight.Bold) },
-                                                modifier = Modifier.clickable { targetGripper = equipment; focusManager.clearFocus() },
+                                                modifier = Modifier.clickable {
+                                                    targetGripper = equipment
+                                                    focusManager.clearFocus()
+                                                },
                                                 colors = ListItemDefaults.colors(containerColor = Color.Transparent)
                                             )
                                         }
@@ -148,10 +167,63 @@ fun IsoSummaryScreen(
 
                         Spacer(modifier = Modifier.height(24.dp))
                         Text("Side", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(bottom = 8.dp))
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            IsoSummarySideButton("Left", bodySide, Modifier.weight(1f)) { bodySide = it }
-                            IsoSummarySideButton("Bilateral", bodySide, Modifier.weight(1f)) { bodySide = it }
-                            IsoSummarySideButton("Right", bodySide, Modifier.weight(1f)) { bodySide = it }
+
+                        // FIX: Transparent segment buttons for clean UI parity
+                        val segColors = SegmentedButtonDefaults.colors(
+                            inactiveContainerColor = Color.Transparent,
+                            activeContainerColor = MaterialTheme.colorScheme.primaryContainer
+                        )
+                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                            SegmentedButton(
+                                selected = bodySide == "Left",
+                                onClick = { bodySide = "Left" },
+                                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 3),
+                                colors = segColors
+                            ) { Text("Left") }
+                            SegmentedButton(
+                                selected = bodySide == "Bilateral",
+                                onClick = { bodySide = "Bilateral" },
+                                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 3),
+                                colors = segColors
+                            ) { Text("Bilateral") }
+                            SegmentedButton(
+                                selected = bodySide == "Right",
+                                onClick = { bodySide = "Right" },
+                                shape = SegmentedButtonDefaults.itemShape(index = 2, count = 3),
+                                colors = segColors
+                            ) { Text("Right") }
+                        }
+
+                        // --- ANIMATED REVERT BOX ---
+                        AnimatedVisibility(
+                            visible = isModified,
+                            enter = expandVertically(animationSpec = tween(300)) + fadeIn(tween(300)),
+                            exit = shrinkVertically(animationSpec = tween(300)) + fadeOut(tween(300))
+                        ) {
+                            Surface(
+                                onClick = {
+                                    targetGripper = initialGripper
+                                    bodySide = initialSide
+                                    focusManager.clearFocus()
+                                },
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                shape = MaterialTheme.shapes.small,
+                                modifier = Modifier.fillMaxWidth().padding(top = 16.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(Icons.Default.Restore, contentDescription = "Revert", modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Revert to: $initialGripper ($initialSide)",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -161,11 +233,20 @@ fun IsoSummaryScreen(
                 IsoRepCard(repNum = index + 1, rep = rep, useLbs = useLbs)
             }
         }
+
         if (showDiscardDialog) {
             AlertDialog(
-                onDismissRequest = { showDiscardDialog = false }, title = { Text("Discard Session?") }, text = { Text("Are you sure you want to delete this data? It cannot be recovered.") },
-                confirmButton = { Button(onClick = { showDiscardDialog = false; onDismiss() }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Discard") } },
-                dismissButton = { TextButton(onClick = { showDiscardDialog = false }) { Text("Cancel") } }
+                onDismissRequest = { showDiscardDialog = false },
+                title = { Text("Discard Session?") },
+                text = { Text("Are you sure you want to delete this data? It cannot be recovered.") },
+                confirmButton = {
+                    Button(onClick = { showDiscardDialog = false; onDismiss() }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) {
+                        Text("Discard")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showDiscardDialog = false }) { Text("Cancel") }
+                }
             )
         }
     }
@@ -175,7 +256,6 @@ fun IsoSummaryScreen(
 
 @Composable
 fun IsoRepCard(repNum: Int, rep: IsoRepEntity, useLbs: Boolean) {
-    // M3 Expressive: 24dp Rep Card
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(24.dp),
@@ -191,7 +271,6 @@ fun IsoRepCard(repNum: Int, rep: IsoRepEntity, useLbs: Boolean) {
             } else {
                 SummaryForceGraph(
                     samples = rep.samples,
-                    targetWeight = rep.targetWeight,
                     useLbs = useLbs,
                     modifier = Modifier.fillMaxWidth().height(150.dp).padding(vertical = 12.dp)
                 )
@@ -199,25 +278,13 @@ fun IsoRepCard(repNum: Int, rep: IsoRepEntity, useLbs: Boolean) {
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
 
-            val target = rep.targetWeight
-            val diff = if (target != null && rep.samples.isNotEmpty()) rep.median - target else null
-            val percDiff = if (target != null && target > 0 && rep.samples.isNotEmpty()) (diff!! / target) * 100 else null
-            val targetDur = rep.durationTarget
-
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                StatCol("Target Weight", if (target == null) "-" else formatWeightHistory(target, useLbs))
-                StatCol("Target Time", if (targetDur == null) "-" else "${targetDur}s")
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                StatCol("Duration", "${String.format("%.1f", rep.duration)}s")
+                StatCol("Duration", "${String.format(java.util.Locale.US, "%.1f", rep.duration)}s")
                 StatCol("Median", if (rep.samples.isEmpty()) "-" else formatWeightHistory(rep.median, useLbs))
-                StatCol("Mean", if (rep.samples.isEmpty()) "-" else formatWeightHistory(rep.mean, useLbs))
             }
             Spacer(modifier = Modifier.height(12.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                StatCol("Diff", if (diff == null || rep.samples.isEmpty()) "-" else formatWeightHistory(abs(diff), useLbs, diff > 0))
-                StatCol("% Diff", if (percDiff == null || rep.samples.isEmpty()) "-" else String.format("%s%.1f%%", if (percDiff > 0) "+" else "", percDiff))
+                StatCol("Mean", if (rep.samples.isEmpty()) "-" else formatWeightHistory(rep.mean, useLbs))
                 StatCol("Std Dev", if (rep.samples.isEmpty()) "-" else formatWeightHistory(rep.stdDev, useLbs))
             }
         }
@@ -227,7 +294,7 @@ fun IsoRepCard(repNum: Int, rep: IsoRepEntity, useLbs: Boolean) {
 @Composable
 fun MetricItem(label: String, value: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(value, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) // Bumped to headlineSmall
+        Text(value, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
@@ -236,23 +303,21 @@ fun MetricItem(label: String, value: String) {
 fun StatCol(label: String, value: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(4.dp)) {
         Text(text = label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(text = value, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold) // Bumped to bodyLarge
+        Text(text = value, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
     }
 }
 
 @Composable
-fun SummaryForceGraph(samples: List<Double>, targetWeight: Double?, useLbs: Boolean, modifier: Modifier = Modifier) {
+fun SummaryForceGraph(samples: List<Double>, useLbs: Boolean, modifier: Modifier = Modifier) {
     val lineColor = MaterialTheme.colorScheme.primary
-    val targetColor = MaterialTheme.colorScheme.error.copy(alpha = 0.7f)
     val axisColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
 
     Canvas(modifier = modifier) {
         if (samples.isEmpty()) return@Canvas
 
         val processedSamples = if (useLbs) samples.map { it * AppConstants.KG_TO_LBS } else samples
-        val target = targetWeight?.let { if (useLbs) it * AppConstants.KG_TO_LBS else it }
 
-        val maxVal = maxOf(processedSamples.maxOrNull() ?: 0.0, target ?: 0.0) * 1.1
+        val maxVal = (processedSamples.maxOrNull() ?: 0.0) * 1.1
         val minVal = 0.0
 
         val width = size.width
@@ -261,11 +326,6 @@ fun SummaryForceGraph(samples: List<Double>, targetWeight: Double?, useLbs: Bool
         drawLine(axisColor, Offset(0f, height), Offset(width, height), strokeWidth = 2f)
         drawLine(axisColor, Offset(0f, 0f), Offset(0f, height), strokeWidth = 2f)
 
-        if (target != null && maxVal > 0) {
-            val y = height - ((target - minVal) / (maxVal - minVal) * height).toFloat()
-            drawLine(targetColor, Offset(0f, y), Offset(width, y), strokeWidth = 3f)
-        }
-
         if (processedSamples.size > 1 && maxVal > 0) {
             val path = Path()
             processedSamples.forEachIndexed { index, value ->
@@ -273,27 +333,13 @@ fun SummaryForceGraph(samples: List<Double>, targetWeight: Double?, useLbs: Bool
                 val y = height - ((value - minVal) / (maxVal - minVal) * height).toFloat()
                 if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
             }
-            drawPath(path = path, color = lineColor, style = Stroke(width = 6f)) // Thickened the stroke
+            drawPath(path = path, color = lineColor, style = Stroke(width = 6f))
         }
     }
-}
-
-@Composable
-private fun IsoSummarySideButton(label: String, current: String, modifier: Modifier = Modifier, onSelect: (String) -> Unit) {
-    val isSelected = label == current
-    Button(
-        onClick = { onSelect(label) }, modifier = modifier,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-            contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
-        ),
-        shape = RoundedCornerShape(12.dp), // Sharpened slightly for contrast inside the soft card
-        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 12.dp)
-    ) { Text(label, maxLines = 1, fontWeight = FontWeight.Bold) }
 }
 
 fun formatWeightHistory(kg: Double, useLbs: Boolean, showSign: Boolean = false): String {
     val displayValue = if (useLbs) kg * AppConstants.KG_TO_LBS else kg
     val sign = if (showSign && displayValue > 0) "+" else ""
-    return String.format("%s%.1f %s", sign, displayValue, if (useLbs) "lbs" else "kg")
+    return String.format(java.util.Locale.US, "%s%.1f %s", sign, displayValue, if (useLbs) "lbs" else "kg")
 }

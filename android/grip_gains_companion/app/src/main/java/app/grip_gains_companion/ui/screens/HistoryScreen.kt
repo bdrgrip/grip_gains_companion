@@ -18,7 +18,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -79,7 +78,6 @@ fun HistoryScreen(
     var sortOrder by remember { mutableStateOf(SortOrder.NEWEST) }
 
     // UI Dropdown States
-    var expandedAutocomplete by remember { mutableStateOf(false) }
     var showTypeDropdown by remember { mutableStateOf(false) }
     var showSideDropdown by remember { mutableStateOf(false) }
 
@@ -91,7 +89,12 @@ fun HistoryScreen(
     val rawSessions by sessionRepository.getAllRawSessions().collectAsState(initial = emptyList())
     val isoSessions by sessionRepository.getAllIsoSessions().collectAsState(initial = emptyList())
 
-    val allMuscles = remember(rawSessions) { rawSessions.map { it.targetMuscle }.distinct().sorted() }
+    val allEquipment = remember(rawSessions, isoSessions) {
+        (rawSessions.map { it.targetMuscle } + isoSessions.map { it.gripperType })
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+    }
 
     val createDocumentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("text/csv")
@@ -162,67 +165,63 @@ fun HistoryScreen(
             contentPadding = PaddingValues(bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-
-            // --- SEARCH BAR ---
+            // --- SEARCH BAR WITH INLINE AUTOCOMPLETE ---
             item {
                 Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-                    ExposedDropdownMenuBox(
-                        expanded = expandedAutocomplete,
-                        onExpandedChange = { expandedAutocomplete = it }
-                    ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
                         OutlinedTextField(
                             value = searchQuery,
                             onValueChange = {
                                 searchQuery = it
-                                expandedAutocomplete = true
                                 if (it.isEmpty()) selectedMuscleFilter = null
                             },
                             label = { Text("Filter muscle or equipment") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .menuAnchor(),
+                            modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(24.dp),
                             trailingIcon = {
                                 if (selectedMuscleFilter != null || searchQuery.isNotEmpty()) {
                                     IconButton(onClick = {
                                         selectedMuscleFilter = null
                                         searchQuery = ""
-                                        expandedAutocomplete = false
                                         focusManager.clearFocus()
                                     }) {
                                         Icon(Icons.Default.Clear, contentDescription = "Clear")
                                     }
-                                } else {
-                                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedAutocomplete)
                                 }
                             },
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                             keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() })
                         )
 
-                        val filteredOptions = allMuscles.filter { it.contains(searchQuery, true) && !it.equals(selectedMuscleFilter, true) }
+                        val filteredOptions = if (searchQuery.isEmpty()) {
+                            emptyList()
+                        } else {
+                            allEquipment.filter { it.contains(searchQuery, ignoreCase = true) && !it.equals(selectedMuscleFilter, ignoreCase = true) }
+                        }
 
-                        ExposedDropdownMenu(
-                            expanded = expandedAutocomplete,
-                            onDismissRequest = { expandedAutocomplete = false }
+                        AnimatedVisibility(
+                            visible = filteredOptions.isNotEmpty(),
+                            enter = expandVertically(animationSpec = tween(300)) + fadeIn(tween(300)),
+                            exit = shrinkVertically(animationSpec = tween(300)) + fadeOut(tween(300))
                         ) {
-                            if (filteredOptions.isEmpty()) {
-                                DropdownMenuItem(
-                                    text = { Text("No match found", color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                                    onClick = { },
-                                    enabled = false
-                                )
-                            } else {
-                                filteredOptions.forEach { muscle ->
-                                    DropdownMenuItem(
-                                        text = { Text(muscle) },
-                                        onClick = {
-                                            selectedMuscleFilter = muscle
-                                            searchQuery = muscle
-                                            expandedAutocomplete = false
-                                            focusManager.clearFocus()
-                                        }
-                                    )
+                            ElevatedCard(
+                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                                elevation = CardDefaults.elevatedCardElevation(defaultElevation = 8.dp)
+                            ) {
+                                Column(modifier = Modifier.fillMaxWidth()) {
+                                    filteredOptions.take(5).forEach { equipment ->
+                                        ListItem(
+                                            headlineContent = { Text(equipment, fontWeight = FontWeight.Bold) },
+                                            modifier = Modifier.clickable {
+                                                selectedMuscleFilter = equipment
+                                                searchQuery = equipment
+                                                focusManager.clearFocus()
+                                            },
+                                            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                                        )
+                                    }
                                 }
                             }
                         }

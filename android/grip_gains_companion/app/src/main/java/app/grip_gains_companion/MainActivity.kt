@@ -16,6 +16,7 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -58,6 +59,7 @@ import app.grip_gains_companion.service.RawSessionManager
 import app.grip_gains_companion.service.SessionResult
 import app.grip_gains_companion.service.TimerForegroundService
 import app.grip_gains_companion.service.ble.BluetoothManager
+import app.grip_gains_companion.service.ble.M5StickManager
 import app.grip_gains_companion.service.web.WebViewBridge
 import app.grip_gains_companion.ui.screens.*
 import app.grip_gains_companion.ui.theme.GripGainsTheme
@@ -65,11 +67,11 @@ import app.grip_gains_companion.util.HapticManager
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.util.UUID
-import android.content.res.Configuration
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var bluetoothManager: BluetoothManager
+    private lateinit var m5StickManager: M5StickManager
     private lateinit var progressorHandler: ProgressorHandler
     private lateinit var webViewBridge: WebViewBridge
     private lateinit var preferencesRepository: PreferencesRepository
@@ -156,7 +158,10 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
-            if (permissions.all { it.value }) bluetoothManager.startScanning()
+            if (permissions.all { it.value }) {
+                bluetoothManager.startScanning()
+                m5StickManager.startScanning()
+            }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -177,6 +182,7 @@ class MainActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         bluetoothManager = BluetoothManager(this)
+        m5StickManager = M5StickManager(this)
         progressorHandler = ProgressorHandler()
         webViewBridge = WebViewBridge()
         preferencesRepository = PreferencesRepository(this)
@@ -203,16 +209,22 @@ class MainActivity : ComponentActivity() {
 
         setupEventHandlers()
 
-        if (hasAllPermissions()) bluetoothManager.startScanning()
-        else permissionLauncher.launch(requiredPermissions)
+        if (hasAllPermissions()) {
+            bluetoothManager.startScanning()
+            m5StickManager.startScanning()
+        } else {
+            permissionLauncher.launch(requiredPermissions)
+        }
 
         setContent {
             val navController = rememberNavController()
             val haptic = LocalHapticFeedback.current
-
             val snackbarHostState = remember { SnackbarHostState() }
 
-            // UI Global States
+            // 1. ADD THESE TWO LINES FOR BLUETOOTH CHECKS
+            val enableBluetoothLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { }
+            val btAdapter = remember { (getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager).adapter }
+
             var showWeightPrompt by remember { mutableStateOf(false) }
             var showTensionSheet by remember { mutableStateOf(false) }
             var showKinematicsSheet by remember { mutableStateOf(false) }
@@ -221,15 +233,19 @@ class MainActivity : ComponentActivity() {
             val showIsoSummaryPref by preferencesRepository.showIsoSummary.collectAsState(initial = true)
             val showRawSummaryPref by preferencesRepository.showRawSummary.collectAsState(initial = true)
 
-            // Scoped Data
             val currentUrl by webViewBridge.currentUrl.collectAsState()
             val webWeight by webViewBridge.targetWeight.collectAsState()
             val isBasicTimerPage = currentUrl.contains("basic-timer")
             val rawSessions by sessionRepository.getAllRawSessions().collectAsState(initial = emptyList())
             val recentMuscles = remember(rawSessions) { rawSessions.map { it.targetMuscle }.distinct().sorted() }
             val allIsoSessions by sessionRepository.getAllIsoSessions().collectAsState(initial = emptyList())
-            val recentEquipment = remember(allIsoSessions) { allIsoSessions.map { it.gripperType }.distinct().sorted() }
+
+            val recentGrippers = remember(allIsoSessions) { allIsoSessions.map { it.gripperType }.distinct().sorted() }
             var isoOverrideWeight by remember { mutableStateOf<Double?>(null) }
+
+            val unifiedEquipment = remember(recentMuscles, recentGrippers) {
+                (recentMuscles + recentGrippers).distinct().sorted()
+            }
 
             val connectionState by bluetoothManager.connectionState.collectAsState()
             val isConnected = connectionState == ConnectionState.Connected
@@ -238,9 +254,13 @@ class MainActivity : ComponentActivity() {
             val isoGripper by webViewBridge.sessionGripper.collectAsState()
             val isoSide by webViewBridge.sessionSide.collectAsState()
 
-            // Prefs
             val useLbs by preferencesRepository.useLbs.collectAsState(initial = false)
-            val expandedForceBar by preferencesRepository.expandedForceBar.collectAsState(initial = true)
+
+            // --- SYNC HARDWARE PARSER TO UI ---
+            LaunchedEffect(useLbs) {
+                bluetoothManager.setHardwareUnitIsLbs(useLbs)
+            }
+
             val showForceGraph by preferencesRepository.showForceGraph.collectAsState(initial = true)
             val forceGraphWindow by preferencesRepository.forceGraphWindow.collectAsState(initial = 5)
             val enableTargetWeight by preferencesRepository.enableTargetWeight.collectAsState(initial = true)
@@ -249,11 +269,41 @@ class MainActivity : ComponentActivity() {
             val enableHaptics by preferencesRepository.enableHaptics.collectAsState(initial = true)
             val enableCalibration by preferencesRepository.enableCalibration.collectAsState(initial = true)
             val enableIsotonicMode by preferencesRepository.enableIsotonicMode.collectAsState(initial = true)
+            val enableTargetSound by preferencesRepository.enableTargetSound.collectAsState(initial = true)
 
             val effectiveTargetWeight = if (isBasicTimerPage) {
                 currentManualWeight
             } else {
                 isoOverrideWeight ?: webWeight ?: (if (useLbs) 20.0 / 2.20462 else 20.0)
+            }
+
+            // --- STRICT EDGE-DETECTION BIOFEEDBACK LOOP ---
+            val currentForce by progressorHandler.currentForce.collectAsState()
+            var previousForce by remember { mutableDoubleStateOf(0.0) }
+            var hasHitTargetThisRep by remember { mutableStateOf(false) }
+
+            LaunchedEffect(currentForce) {
+                if (effectiveTargetWeight > 0.0 && enableTargetWeight) {
+                    val targetLowerBound = effectiveTargetWeight - weightTolerance
+
+                    // EDGE CROSSED: Moving UP into the target zone
+                    if (currentForce >= targetLowerBound && previousForce < targetLowerBound) {
+                        hasHitTargetThisRep = true
+                        if (enableHaptics) hapticManager.success()
+                        if (enableTargetSound) app.grip_gains_companion.util.ToneGenerator.playHighTone()
+                    }
+                    // EDGE CROSSED: Falling DOWN out of the target zone (but still pulling somewhat hard)
+                    else if (currentForce < targetLowerBound && previousForce >= targetLowerBound && hasHitTargetThisRep && currentForce > (effectiveTargetWeight * 0.5)) {
+                        if (enableHaptics) hapticManager.warning()
+                        if (enableTargetSound) app.grip_gains_companion.util.ToneGenerator.playLowTone() // FIX: NOW USES LOW TONE
+                    }
+
+                    // Reset the rep state if tension drops to basically zero
+                    if (currentForce < 2.0) {
+                        hasHitTargetThisRep = false
+                    }
+                }
+                previousForce = currentForce
             }
 
             LaunchedEffect(enableCalibration) {
@@ -268,7 +318,6 @@ class MainActivity : ComponentActivity() {
                 progressorHandler.targetWeight = effectiveTargetWeight
             }
 
-            // UNIFIED END SESSION LOGIC
             LaunchedEffect(Unit) {
                 kotlinx.coroutines.flow.merge(
                     webViewBridge.manualSessionEndTrigger,
@@ -294,9 +343,6 @@ class MainActivity : ComponentActivity() {
             var weightInputText by remember { mutableStateOf(effectiveTargetWeight.toString()) }
 
             val baseContext = LocalContext.current
-
-            // FIX: Wrap the Activity context directly with a native Dark Theme.
-            // This keeps the Window Token intact so dropdown pop-ups actually open!
             val darkContext = remember(baseContext) {
                 android.view.ContextThemeWrapper(baseContext, android.R.style.Theme_Material_NoActionBar)
             }
@@ -305,7 +351,6 @@ class MainActivity : ComponentActivity() {
                 android.webkit.WebView(darkContext).apply {
                     setBackgroundColor(android.graphics.Color.parseColor("#1A2231"))
 
-                    // CHANGED: Disable algorithmic darkening to stop it from spilling into the website CSS.
                     if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.ALGORITHMIC_DARKENING)) {
                         androidx.webkit.WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, false)
                     }
@@ -383,23 +428,26 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
 
+                                val m5State by m5StickManager.connectionState.collectAsState()
+                                val m5Data by m5StickManager.accelerationData.collectAsState()
+
                                 MainScreen(
                                     bluetoothManager = bluetoothManager,
                                     progressorHandler = progressorHandler,
                                     webViewBridge = webViewBridge,
+                                    cachedWebView = cachedWebView,
                                     showStatusBar = true,
-                                    expandedForceBar = expandedForceBar,
                                     showForceGraph = showForceGraph,
                                     forceGraphWindow = forceGraphWindow,
                                     useLbs = useLbs,
                                     enableTargetWeight = enableTargetWeight,
                                     useManualTarget = useManualTarget,
                                     manualTargetWeight = effectiveTargetWeight,
-                                    cachedWebView = cachedWebView,
                                     weightTolerance = weightTolerance,
                                     activeKinematicsSource = activeKinematicsSource,
                                     enableAnalytics = enableAnalytics,
-                                    enableIsotonicMode = enableIsotonicMode,
+                                    m5ConnectionState = m5State,
+                                    m5Data = m5Data,
                                     onSettingsTap = { navController.navigate("settings") },
                                     onHistoryTap = { navController.navigate("history") },
                                     onUnitToggle = { lifecycleScope.launch { preferencesRepository.setUseLbs(!useLbs) } },
@@ -411,20 +459,46 @@ class MainActivity : ComponentActivity() {
                                         }
                                         showWeightPrompt = true
                                     },
-                                    onShowTensionSheet = { showTensionSheet = true },
-                                    onShowKinematicsSheet = { showKinematicsSheet = true }
+                                    onShowTensionSheet = {
+                                        if (btAdapter?.isEnabled == true) {
+                                            showTensionSheet = true
+                                        } else {
+                                            enableBluetoothLauncher.launch(Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                                        }
+                                    },
+                                    enableIsotonicMode = enableIsotonicMode,
+                                    onShowKinematicsSheet = {
+                                        if (btAdapter?.isEnabled == true) {
+                                            if (m5State != ConnectionState.Connected) {
+                                                m5StickManager.startScanning()
+                                            }
+                                            showKinematicsSheet = true
+                                        } else {
+                                            enableBluetoothLauncher.launch(Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                                        }
+                                    }
                                 )
                             }
 
                             composable("settings") {
+                                val m5State by m5StickManager.connectionState.collectAsState()
+                                val m5Data by m5StickManager.accelerationData.collectAsState()
+
                                 SettingsScreen(
                                     preferencesRepository = preferencesRepository,
                                     bluetoothManager = bluetoothManager,
                                     webViewBridge = webViewBridge,
                                     activeKinematicsSource = activeKinematicsSource,
                                     currentManualWeight = currentManualWeight,
-                                    onKinematicsChange = { activeKinematicsSource = it },
-                                    onWeightChange = { currentManualWeight = it },
+                                    m5ConnectionState = m5State,
+                                    m5Data = m5Data,
+                                    onKinematicsChange = { newSource ->
+                                        activeKinematicsSource = newSource
+                                        if (newSource == KinematicsSource.M5STICK && m5State != ConnectionState.Connected) {
+                                            m5StickManager.startScanning()
+                                        }
+                                    },
+                                    onWeightChange = { newWeight -> currentManualWeight = newWeight },
                                     onDismiss = { navController.popBackStack() },
                                     onDisconnect = { bluetoothManager.disconnect() },
                                     onConnectDevice = { bluetoothManager.startScanning(); navController.popBackStack() },
@@ -440,7 +514,7 @@ class MainActivity : ComponentActivity() {
                             composable("history") {
                                 HistoryScreen(
                                     sessionRepository = sessionRepository,
-                                    enableIsotonicMode = enableIsotonicMode, // <-- THIS WAS MISSING
+                                    enableIsotonicMode = enableIsotonicMode,
                                     onBack = { navController.popBackStack() },
                                     onViewSession = { id, type ->
                                         if (type == SessionType.ISOTONIC) {
@@ -471,6 +545,7 @@ class MainActivity : ComponentActivity() {
                                     sessionId = sessionId,
                                     sessionRepository = sessionRepository,
                                     useLbs = useLbs,
+                                    recentEquipment = unifiedEquipment,
                                     onBack = { navController.popBackStack() }
                                 )
                             }
@@ -488,7 +563,6 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    // MODALS & OVERLAYS
                     if (showWeightPrompt) {
                         AlertDialog(
                             onDismissRequest = { showWeightPrompt = false },
@@ -547,7 +621,6 @@ class MainActivity : ComponentActivity() {
                                             items(discoveredDevices) { device ->
                                                 Surface(
                                                     onClick = {
-                                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                                         bluetoothManager.connect(device)
                                                         showTensionSheet = false
                                                     },
@@ -581,6 +654,9 @@ class MainActivity : ComponentActivity() {
                             title = { Text("Select Kinematics Source", fontWeight = FontWeight.Bold) },
                             text = {
                                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    val m5State by m5StickManager.connectionState.collectAsState()
+                                    val m5Data by m5StickManager.accelerationData.collectAsState()
+
                                     Surface(
                                         onClick = {
                                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -603,17 +679,48 @@ class MainActivity : ComponentActivity() {
                                         onClick = {
                                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                             activeKinematicsSource = KinematicsSource.M5STICK
-                                            showKinematicsSheet = false
+                                            if (m5State != ConnectionState.Connected) {
+                                                m5StickManager.startScanning()
+                                            }
                                         },
                                         shape = RoundedCornerShape(16.dp),
-                                        color = MaterialTheme.colorScheme.surfaceVariant,
+                                        color = if (activeKinematicsSource == KinematicsSource.M5STICK) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         ListItem(
                                             headlineContent = { Text("M5StickC Plus 2", fontWeight = FontWeight.Bold) },
-                                            supportingContent = { Text("External Bluetooth IMU.") },
+                                            supportingContent = {
+                                                Column {
+                                                    Text("External Bluetooth IMU.")
+                                                    if (activeKinematicsSource == KinematicsSource.M5STICK) {
+                                                        Spacer(modifier = Modifier.height(6.dp))
+                                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                                            Box(
+                                                                modifier = Modifier
+                                                                    .size(8.dp)
+                                                                    .clip(androidx.compose.foundation.shape.CircleShape)
+                                                                    .background(if (m5State == ConnectionState.Connected) Color.Green else MaterialTheme.colorScheme.error)
+                                                            )
+                                                            Spacer(modifier = Modifier.width(6.dp))
+                                                            if (m5State == ConnectionState.Connected) {
+                                                                Text(
+                                                                    "Live: X: ${String.format(java.util.Locale.US, "%.1f", m5Data.first)} Y: ${String.format(java.util.Locale.US, "%.1f", m5Data.second)} Z: ${String.format(java.util.Locale.US, "%.1f", m5Data.third)}",
+                                                                    style = MaterialTheme.typography.bodyMedium,
+                                                                    fontWeight = FontWeight.Bold
+                                                                )
+                                                            } else {
+                                                                Text("Disconnected / Scanning...", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            },
                                             leadingContent = { Icon(Icons.Default.Watch, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) },
-                                            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                                            colors = ListItemDefaults.colors(
+                                                containerColor = Color.Transparent,
+                                                headlineColor = if (activeKinematicsSource == KinematicsSource.M5STICK) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                                                supportingColor = if (activeKinematicsSource == KinematicsSource.M5STICK) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
                                         )
                                     }
                                 }
@@ -624,7 +731,6 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    // SESSION SUMMARIES
                     finishedSessionData?.let { result ->
                         RawSummaryScreen(
                             result = result,
@@ -669,7 +775,7 @@ class MainActivity : ComponentActivity() {
                             useLbs = useLbs,
                             initialGripper = isoGripper ?: "",
                             initialSide = mappedSide,
-                            recentEquipment = recentEquipment,
+                            recentEquipment = unifiedEquipment,
                             onDismiss = {
                                 showIsoSummary = false
                                 isoSessionManager.clearSession()
@@ -712,7 +818,33 @@ class MainActivity : ComponentActivity() {
             preferencesRepository.enableIsotonicMode.collect { isotonicModeEnabled = it }
         }
 
-        // RESTORED: THE CRITICAL MISSING LOGIC
+        lifecycleScope.launch {
+            m5StickManager.accelerationData.collect { (m5x, m5y, m5z) ->
+                if (activeKinematicsSource == KinematicsSource.M5STICK) {
+                    latestX = m5x
+                    latestY = m5y
+                    latestZ = m5z
+
+                    if (rawSessionManager.isHoldActive) {
+                        val isConnected = bluetoothManager.connectionState.value == ConnectionState.Connected
+                        val webWeight = webViewBridge.targetWeight.value
+
+                        val activeTension = if (isConnected) {
+                            progressorHandler.currentForce.value
+                        } else if (webWeight != null && webWeight > 0.0) {
+                            webWeight
+                        } else {
+                            currentManualWeight
+                        }
+
+                        rawSessionManager.addSample(
+                            latestX, latestY, latestZ, activeTension, System.currentTimeMillis() * 1_000_000
+                        )
+                    }
+                }
+            }
+        }
+
         lifecycleScope.launch {
             webViewBridge.buttonEnabled.collect { isLive ->
                 val currentUrl = webViewBridge.currentUrl.value
@@ -785,7 +917,6 @@ class MainActivity : ComponentActivity() {
         val hasAutoWeight = (webViewBridge.targetWeight.value ?: 0.0) > 0.0
         val isRawEligible = currentUrl.contains("basic-timer") && !hasAutoWeight && isotonicEnabled
 
-        // RULE: Analytics Off = Delete everything
         if (!enableAnalytics) {
             if (isRawEligible) {
                 if (rawSessionManager.isHoldActive) rawSessionManager.stopHold()
@@ -799,11 +930,9 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        // RULE: Analytics On
         if (isRawEligible) {
             if (rawSessionManager.isHoldActive) rawSessionManager.stopHold()
             val result = rawSessionManager.finalizeSession()
-            // RULE B: Discard Basic Timer if preference is off
             if (result.timeUnderTension > 0.5 && showRawSummaryPref) {
                 finishedSessionData = result
             }
@@ -816,7 +945,6 @@ class MainActivity : ComponentActivity() {
                 if (showIsoSummaryPref) {
                     showIsoSummary = true
                 } else {
-                    // RULE A: Auto-save Iso without Popup
                     lifecycleScope.launch {
                         val sSide = webViewBridge.sessionSide.value
                         val sGrip = webViewBridge.sessionGripper.value ?: ""
@@ -854,5 +982,6 @@ class MainActivity : ComponentActivity() {
         unregisterReceiver(failRepReceiver)
         sensorManager.unregisterListener(sensorListener)
         bluetoothManager.disconnect()
+        m5StickManager.disconnect()
     }
 }

@@ -1,6 +1,12 @@
 package app.grip_gains_companion.ui.screens
 
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager as AndroidBluetoothManager
+import android.content.Context
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -26,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -49,6 +56,8 @@ fun SettingsScreen(
     webViewBridge: WebViewBridge,
     activeKinematicsSource: KinematicsSource,
     currentManualWeight: Double,
+    m5ConnectionState: ConnectionState,
+    m5Data: Triple<Float, Float, Float>,
     onKinematicsChange: (KinematicsSource) -> Unit,
     onWeightChange: (Double) -> Unit,
     onDismiss: () -> Unit,
@@ -58,11 +67,18 @@ fun SettingsScreen(
     onViewLogs: () -> Unit,
     onViewHistory: () -> Unit
 ) {
+    // --- INITIALIZE CONTEXT BEFORE CALLING SYSTEM SERVICES ---
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
 
+    val btManager = remember { context.getSystemService(Context.BLUETOOTH_SERVICE) as? AndroidBluetoothManager }
+    val btAdapter = btManager?.adapter
+    val enableBluetoothLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {}
+
     val useLbs by preferencesRepository.useLbs.collectAsStateWithLifecycle(initialValue = false)
-    val expandedForceBar by preferencesRepository.expandedForceBar.collectAsStateWithLifecycle(initialValue = true)
     val showForceGraph by preferencesRepository.showForceGraph.collectAsStateWithLifecycle(initialValue = true)
     val forceGraphWindow by preferencesRepository.forceGraphWindow.collectAsStateWithLifecycle(initialValue = 5)
     val weightTolerance by preferencesRepository.weightTolerance.collectAsStateWithLifecycle(initialValue = 0.5)
@@ -136,10 +152,14 @@ fun SettingsScreen(
                         title = "Scale Connection",
                         icon = Icons.Default.FitnessCenter,
                         activeSource = if (connectionState == ConnectionState.Connected) connectedDeviceName ?: "Bluetooth Scale" else "[No Device]",
-                        statusColor = if (connectionState == ConnectionState.Connected) Color.Green else Color.LightGray,
+                        statusColor = if (connectionState == ConnectionState.Connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
                         onClick = {
-                            bluetoothManager.startScanning()
-                            showTensionSheet = true
+                            if (btAdapter?.isEnabled == true) {
+                                bluetoothManager.startScanning()
+                                showTensionSheet = true
+                            } else {
+                                enableBluetoothLauncher.launch(android.content.Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                            }
                         }
                     )
 
@@ -209,8 +229,20 @@ fun SettingsScreen(
                                     title = "Kinematics Data",
                                     icon = Icons.Default.Speed,
                                     activeSource = if (activeKinematicsSource == KinematicsSource.PHONE) "Phone Accelerometer" else "M5StickC Plus 2",
-                                    statusColor = if (activeKinematicsSource == KinematicsSource.PHONE) Color.Cyan else Color(0xFFE65100),
-                                    onClick = { showKinematicsSheet = true }
+                                    statusColor = if (activeKinematicsSource == KinematicsSource.PHONE) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else if (m5ConnectionState == ConnectionState.Connected) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.error
+                                    },
+                                    onClick = {
+                                        if (btAdapter?.isEnabled == true) {
+                                            showKinematicsSheet = true
+                                        } else {
+                                            enableBluetoothLauncher.launch(android.content.Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                                        }
+                                    }
                                 )
                             }
                         }
@@ -227,7 +259,6 @@ fun SettingsScreen(
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Analytics & History", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
 
-                    // Wrapper Column
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                             Text("Enable Analytics", style = MaterialTheme.typography.bodyLarge)
@@ -272,12 +303,7 @@ fun SettingsScreen(
                         Text("Use Imperial Units (lbs)")
                         Switch(checked = useLbs, onCheckedChange = { coroutineScope.launch { preferencesRepository.setUseLbs(it) } })
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                        Text("Expanded Force Bar")
-                        Switch(checked = expandedForceBar, onCheckedChange = { coroutineScope.launch { preferencesRepository.setExpandedForceBar(it) } })
-                    }
 
-                    // Wrapper Column
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                             Text("Show Force Graph")
@@ -323,7 +349,6 @@ fun SettingsScreen(
                         Switch(checked = backgroundTimeSync, onCheckedChange = { coroutineScope.launch { preferencesRepository.setBackgroundTimeSync(it) } })
                     }
 
-                    // Wrapper Column
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                             Text("Auto-Fail Rep on Tension Drop")
@@ -348,7 +373,6 @@ fun SettingsScreen(
                         }
                     }
 
-                    // Wrapper Column
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                             Text("Abort Fatigued Session Early")
@@ -418,7 +442,7 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(48.dp))
         }
 
-        // Dialogs and BottomSheets remain exactly the same...
+        // --- DIALOGS ---
         if (showResetConfirmation) {
             AlertDialog(
                 onDismissRequest = { showResetConfirmation = false },
@@ -438,68 +462,233 @@ fun SettingsScreen(
         }
 
         if (showTensionSheet) {
-            ModalBottomSheet(onDismissRequest = { showTensionSheet = false }) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Select Tension Source", style = MaterialTheme.typography.titleLarge)
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("Bluetooth Crane Scales", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                    if (connectionState == ConnectionState.Connected) {
-                        TextButton(onClick = { onDisconnect(); showTensionSheet = false }) {
-                            Text("Disconnect Current Scale", color = MaterialTheme.colorScheme.error)
+            AlertDialog(
+                onDismissRequest = { showTensionSheet = false },
+                shape = RoundedCornerShape(28.dp),
+                title = { Text("Select Tension Source", fontWeight = FontWeight.Bold) },
+                text = {
+                    Column {
+                        if (connectionState == ConnectionState.Connected) {
+                            TextButton(
+                                onClick = { bluetoothManager.disconnect(); showTensionSheet = false },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Disconnect Current Scale", color = MaterialTheme.colorScheme.error)
+                            }
+                            Spacer(modifier = Modifier.height(16.dp))
                         }
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    if (discoveredDevices.isEmpty() && connectionState != ConnectionState.Connected) {
-                        CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally).padding(16.dp))
-                    } else {
-                        LazyColumn {
-                            items(discoveredDevices) { device ->
-                                @SuppressLint("MissingPermission")
-                                ListItem(
-                                    headlineContent = { Text(device.name ?: "Unknown Device") },
-                                    supportingContent = { Text(device.address) },
-                                    leadingContent = { Icon(Icons.Default.Bluetooth, contentDescription = null) },
-                                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable {
-                                        bluetoothManager.connect(device)
-                                        showTensionSheet = false
-                                    }.background(MaterialTheme.colorScheme.surfaceVariant)
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
+
+                        if (discoveredDevices.isEmpty() && connectionState != ConnectionState.Connected) {
+                            Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator()
+                            }
+                        } else {
+                            LazyColumn(modifier = Modifier.heightIn(max = 350.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                items(discoveredDevices) { device ->
+                                    Surface(
+                                        onClick = {
+                                            bluetoothManager.connect(device)
+                                            showTensionSheet = false
+                                        },
+                                        shape = RoundedCornerShape(16.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        @SuppressLint("MissingPermission")
+                                        ListItem(
+                                            headlineContent = { Text(device.name ?: "Unknown Device", fontWeight = FontWeight.Bold) },
+                                            supportingContent = { Text(device.address) },
+                                            leadingContent = { Icon(Icons.Default.Bluetooth, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                                            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
-                    Spacer(modifier = Modifier.height(32.dp))
+                },
+                confirmButton = {
+                    TextButton(onClick = { showTensionSheet = false }) { Text("Close") }
                 }
-            }
+            )
         }
 
         if (showKinematicsSheet) {
-            ModalBottomSheet(onDismissRequest = { showKinematicsSheet = false }) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Select Kinematics Source", style = MaterialTheme.typography.titleLarge)
-                    Spacer(modifier = Modifier.height(16.dp))
-                    ListItem(
-                        headlineContent = { Text("Phone Accelerometer") },
-                        supportingContent = { Text("Uses internal gravity sensors. Requires phone strapped to body.") },
-                        leadingContent = { Icon(Icons.Default.Smartphone, contentDescription = null) },
-                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable {
-                            onKinematicsChange(KinematicsSource.PHONE)
-                            showKinematicsSheet = false
-                        }.background(MaterialTheme.colorScheme.surfaceVariant)
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    ListItem(
-                        headlineContent = { Text("M5StickC Plus 2") },
-                        supportingContent = { Text("External Bluetooth IMU. Straps directly to the body.") },
-                        leadingContent = { Icon(Icons.Default.Watch, contentDescription = null) },
-                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable {
-                            onKinematicsChange(KinematicsSource.M5STICK)
-                            showKinematicsSheet = false
-                        }.background(MaterialTheme.colorScheme.surfaceVariant)
-                    )
-                    Spacer(modifier = Modifier.height(32.dp))
+            AlertDialog(
+                onDismissRequest = { showKinematicsSheet = false },
+                shape = RoundedCornerShape(28.dp),
+                title = { Text("Select Kinematics Source", fontWeight = FontWeight.Bold) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+
+                        // 1. Phone Accelerometer Card
+                        Surface(
+                            onClick = {
+                                onKinematicsChange(KinematicsSource.PHONE)
+                                showKinematicsSheet = false
+                            },
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            ListItem(
+                                headlineContent = { Text("Phone Accelerometer", fontWeight = FontWeight.Bold) },
+                                supportingContent = { Text("Uses internal gravity sensors.") },
+                                leadingContent = { Icon(Icons.Default.Smartphone, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                            )
+                        }
+
+                        // 2. M5Stick Card with Live Status
+                        Surface(
+                            onClick = {
+                                onKinematicsChange(KinematicsSource.M5STICK)
+                            },
+                            shape = RoundedCornerShape(16.dp),
+                            color = if (activeKinematicsSource == KinematicsSource.M5STICK) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            ListItem(
+                                headlineContent = { Text("M5StickC Plus 2", fontWeight = FontWeight.Bold) },
+                                supportingContent = {
+                                    Column {
+                                        Text("External Bluetooth IMU.")
+                                        if (activeKinematicsSource == KinematicsSource.M5STICK) {
+                                            Spacer(modifier = Modifier.height(6.dp))
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                // THE MATERIAL YOU DOT
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(8.dp)
+                                                        .clip(RoundedCornerShape(50)) // Circle
+                                                        .background(if (m5ConnectionState == ConnectionState.Connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                if (m5ConnectionState == ConnectionState.Connected) {
+                                                    Text(
+                                                        "Live: X: ${String.format(java.util.Locale.US, "%.1f", m5Data.first)} Y: ${String.format(java.util.Locale.US, "%.1f", m5Data.second)} Z: ${String.format(java.util.Locale.US, "%.1f", m5Data.third)}",
+                                                        style = MaterialTheme.typography.bodyMedium,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                } else {
+                                                    Text("Disconnected / Scanning...", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                leadingContent = { Icon(Icons.Default.Watch, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) },
+                                colors = ListItemDefaults.colors(
+                                    containerColor = Color.Transparent,
+                                    headlineColor = if (activeKinematicsSource == KinematicsSource.M5STICK) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                                    supportingColor = if (activeKinematicsSource == KinematicsSource.M5STICK) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        val context = LocalContext.current
+                        val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+
+                        OutlinedButton(
+                            onClick = {
+                                val clip = android.content.ClipData.newPlainText("M5 Firmware", M5_FIRMWARE_CODE)
+                                clipboardManager.setPrimaryClip(clip)
+                                android.widget.Toast.makeText(context, "Firmware copied to clipboard!", android.widget.Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Copy Firmware (C++)")
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showKinematicsSheet = false }) { Text("Close") }
                 }
-            }
+            )
         }
     }
 }
+
+// Ensure the massive firmware string is kept at the bottom as usual!
+private const val M5_FIRMWARE_CODE = """#include <M5Unified.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+
+BLEServer* pServer = NULL;
+BLECharacteristic* pCharacteristic = NULL;
+bool deviceConnected = false;
+
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+
+struct AccelData {
+  float x;
+  float y;
+  float z;
+};
+
+class MyServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+      deviceConnected = true;
+      M5.Display.fillScreen(GREEN);
+      M5.Display.setCursor(10, 40);
+      M5.Display.println("CONNECTED");
+    }
+
+    void onDisconnect(BLEServer* pServer) {
+      deviceConnected = false;
+      M5.Display.fillScreen(RED);
+      M5.Display.setCursor(10, 40);
+      M5.Display.println("DISCONNECTED");
+      pServer->startAdvertising(); 
+    }
+};
+
+void setup() {
+  auto cfg = M5.config();
+  M5.begin(cfg);
+  
+  M5.Display.setTextSize(1.5);
+  M5.Display.fillScreen(BLUE);
+  M5.Display.setCursor(10, 40);
+  M5.Display.println("BOOTING BLE...");
+
+  BLEDevice::init("RAW_IMU");
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+  pCharacteristic = pService->createCharacteristic(CHARACTERISTIC_UUID, BLECharacteristic::PROPERTY_NOTIFY);
+  pCharacteristic->addDescriptor(new BLE2902());
+  pService->start();
+
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  BLEDevice::startAdvertising();
+
+  M5.Display.fillScreen(BLACK);
+  M5.Display.setCursor(10, 40);
+  M5.Display.println("READY TO\nPAIR");
+}
+
+void loop() {
+  M5.update();
+  if (deviceConnected) {
+    float ax, ay, az;
+    M5.Imu.getAccel(&ax, &ay, &az);
+    AccelData data;
+    data.x = ax; data.y = ay; data.z = az;
+    pCharacteristic->setValue((uint8_t*)&data, sizeof(AccelData));
+    pCharacteristic->notify();
+  }
+  delay(20); 
+}"""
