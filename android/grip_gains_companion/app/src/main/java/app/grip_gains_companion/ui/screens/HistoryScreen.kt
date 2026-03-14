@@ -5,10 +5,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -25,6 +27,7 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -33,15 +36,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import app.grip_gains_companion.database.RawSessionEntity
 import app.grip_gains_companion.database.SessionRepository
 import app.grip_gains_companion.database.SessionType
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -68,6 +74,8 @@ fun HistoryScreen(
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
+    val haptic = LocalHapticFeedback.current
+    val coroutineScope = rememberCoroutineScope()
 
     var searchQuery by remember { mutableStateOf("") }
     var selectedMuscleFilter by remember { mutableStateOf<String?>(null) }
@@ -85,6 +93,11 @@ fun HistoryScreen(
     var showDatePicker by remember { mutableStateOf(false) }
     var dateRange by remember { mutableStateOf<Pair<Long, Long>?>(null) }
     val datePickerState = rememberDateRangePickerState()
+
+    // --- MULTI-SELECT STATES ---
+    val selectedSessionIds = remember { mutableStateListOf<String>() }
+    val isSelectionMode = selectedSessionIds.isNotEmpty()
+    var showDeleteConfirmDialog by remember { mutableStateOf(false) }
 
     val rawSessions by sessionRepository.getAllRawSessions().collectAsState(initial = emptyList())
     val isoSessions by sessionRepository.getAllIsoSessions().collectAsState(initial = emptyList())
@@ -146,16 +159,39 @@ fun HistoryScreen(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             LargeTopAppBar(
-                title = { Text("Session History", fontWeight = FontWeight.Bold) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.Default.Close, contentDescription = "Close") }
-                },
-                actions = {
-                    IconButton(onClick = { createDocumentLauncher.launch("GripGains_Export.csv") }) {
-                        Icon(Icons.Default.Download, contentDescription = "Export CSV")
+                title = {
+                    if (isSelectionMode) {
+                        Text("${selectedSessionIds.size} Selected", fontWeight = FontWeight.Bold)
+                    } else {
+                        Text("Session History", fontWeight = FontWeight.Bold)
                     }
                 },
-                scrollBehavior = scrollBehavior
+                navigationIcon = {
+                    if (isSelectionMode) {
+                        IconButton(onClick = { selectedSessionIds.clear() }) {
+                            Icon(Icons.Default.Close, contentDescription = "Clear Selection")
+                        }
+                    } else {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.Default.Close, contentDescription = "Close")
+                        }
+                    }
+                },
+                actions = {
+                    if (isSelectionMode) {
+                        IconButton(onClick = { showDeleteConfirmDialog = true }) {
+                            Icon(Icons.Default.Delete, contentDescription = "Delete Selected", tint = MaterialTheme.colorScheme.error)
+                        }
+                    } else {
+                        IconButton(onClick = { createDocumentLauncher.launch("GripGains_Export.csv") }) {
+                            Icon(Icons.Default.Download, contentDescription = "Export CSV")
+                        }
+                    }
+                },
+                scrollBehavior = scrollBehavior,
+                colors = TopAppBarDefaults.largeTopAppBarColors(
+                    containerColor = if (isSelectionMode) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface
+                )
             )
         }
     ) { paddingValues ->
@@ -390,9 +426,24 @@ fun HistoryScreen(
 
             // --- LIST ITEMS ---
             items(filteredItems, key = { it.id }) { item ->
+                val isSelected = selectedSessionIds.contains(item.id)
+
                 HistoryCard(
                     item = item,
-                    onClick = { onViewSession(item.id, item.type) },
+                    isSelected = isSelected,
+                    onClick = {
+                        if (isSelectionMode) {
+                            if (isSelected) selectedSessionIds.remove(item.id) else selectedSessionIds.add(item.id)
+                        } else {
+                            onViewSession(item.id, item.type)
+                        }
+                    },
+                    onLongClick = {
+                        if (!isSelectionMode) {
+                            selectedSessionIds.add(item.id)
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        }
+                    },
                     modifier = Modifier
                         .padding(horizontal = 16.dp)
                         .animateItem()
@@ -400,7 +451,41 @@ fun HistoryScreen(
             }
         }
 
-        // --- DATE PICKER DIALOG ---
+        // --- DIALOGS ---
+
+        if (showDeleteConfirmDialog) {
+            AlertDialog(
+                onDismissRequest = { showDeleteConfirmDialog = false },
+                title = { Text("Delete Sessions") },
+                text = { Text("Are you sure you want to permanently delete ${selectedSessionIds.size} session(s)?") },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            coroutineScope.launch {
+                                selectedSessionIds.forEach { id ->
+                                    if (id.startsWith("RAW_")) {
+                                        val rawId = id.removePrefix("RAW_").toLongOrNull()
+                                        // Update this method call if your Repository uses a different name
+                                        rawId?.let { sessionRepository.deleteRawSessionById(it) }
+                                    } else if (id.startsWith("ISO_")) {
+                                        val isoId = id.removePrefix("ISO_")
+                                        // Update this method call if your Repository uses a different name
+                                        sessionRepository.deleteIsoSessionById(isoId)
+                                    }
+                                }
+                                selectedSessionIds.clear()
+                                showDeleteConfirmDialog = false
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) { Text("Delete") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showDeleteConfirmDialog = false }) { Text("Cancel") }
+                }
+            )
+        }
+
         if (showDatePicker) {
             DatePickerDialog(
                 onDismissRequest = { showDatePicker = false },
@@ -500,17 +585,32 @@ fun SimpleScoreLineChart(data: List<HistoryItem>) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun HistoryCard(item: HistoryItem, onClick: () -> Unit, modifier: Modifier = Modifier) {
+fun HistoryCard(
+    item: HistoryItem,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     val formatter = remember { SimpleDateFormat("MMM dd, yyyy • h:mm a", Locale.getDefault()) }
     val isRaw = item.type == SessionType.ISOTONIC
     val sideShort = item.side.take(1).uppercase()
 
     Card(
-        onClick = onClick,
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            ),
         shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer
+            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        ),
+        border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null
     ) {
         Row(modifier = Modifier.padding(20.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {

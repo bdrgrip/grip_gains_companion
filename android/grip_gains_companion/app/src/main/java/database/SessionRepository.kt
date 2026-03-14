@@ -20,6 +20,13 @@ class SessionRepository(
         return rawSessionDao.getAllSessions()
     }
 
+    // --- ADDED FOR HISTORY MULTI-DELETE ---
+    suspend fun deleteRawSessionById(id: Long) {
+        withContext(Dispatchers.IO) {
+            rawSessionDao.deleteSessionById(id)
+        }
+    }
+
     suspend fun insertIsoSession(session: IsoSessionEntity) {
         withContext(Dispatchers.IO) {
             isoSessionDao.insertSession(session)
@@ -47,6 +54,13 @@ class SessionRepository(
     suspend fun deleteIsoSession(session: IsoSessionEntity) {
         withContext(Dispatchers.IO) {
             isoSessionDao.deleteSessionById(session.id)
+        }
+    }
+
+    // --- ADDED FOR HISTORY MULTI-DELETE ---
+    suspend fun deleteIsoSessionById(id: String) {
+        withContext(Dispatchers.IO) {
+            isoSessionDao.deleteSessionById(id)
         }
     }
 }

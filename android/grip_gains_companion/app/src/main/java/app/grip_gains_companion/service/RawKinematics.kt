@@ -57,6 +57,14 @@ class RawSessionManager {
     private val leakFactor = 0.95
     private var velocity = 0.0
     private var position = 0.0
+
+    // --- OUTLIER REJECTION BUFFERS ---
+    private val windowX = FloatArray(3)
+    private val windowY = FloatArray(3)
+    private val windowZ = FloatArray(3)
+    private var windowIndex = 0
+    private var samplesReceived = 0
+
     private val holds = mutableListOf<RawHoldBuffer>()
     var isHoldActive = false
         private set
@@ -64,10 +72,43 @@ class RawSessionManager {
     fun startHold() {
         holds.add(RawHoldBuffer())
         isHoldActive = true
+        // Reset the median filter buffer for every new hold/rep!
+        windowIndex = 0
+        samplesReceived = 0
     }
 
-    fun addSample(x: Float, y: Float, z: Float, tension: Double, timestampNanos: Long) {
+    // Helper function to find the median of a size-3 array
+    private fun getMedian(arr: FloatArray): Float {
+        val a = arr[0]
+        val b = arr[1]
+        val c = arr[2]
+        return maxOf(minOf(a, b), minOf(maxOf(a, b), c))
+    }
+
+    fun addSample(rawX: Float, rawY: Float, rawZ: Float, tension: Double, timestampNanos: Long) {
         if (!isHoldActive || holds.isEmpty()) return
+
+        // 1. ADD TO ROLLING WINDOW
+        windowX[windowIndex] = rawX
+        windowY[windowIndex] = rawY
+        windowZ[windowIndex] = rawZ
+        windowIndex = (windowIndex + 1) % 3
+        samplesReceived++
+
+        // Wait until we have 3 samples to calculate a median (drops the first 60ms of the rep)
+        if (samplesReceived < 3) return
+
+        // 2. APPLY MEDIAN FILTER (Erases 1-frame "crazy high" spikes)
+        val medX = getMedian(windowX)
+        val medY = getMedian(windowY)
+        val medZ = getMedian(windowZ)
+
+        // 3. APPLY BIOMECHANICAL CLAMP (Limits to physical human maximums: ~3 Gs)
+        val limit = 30f // m/s^2
+        val x = medX.coerceIn(-limit, limit)
+        val y = medY.coerceIn(-limit, limit)
+        val z = medZ.coerceIn(-limit, limit)
+
         val currentHold = holds.last()
         if (currentHold.lastTimestamp == 0L) {
             currentHold.firstTimestamp = timestampNanos
@@ -77,6 +118,8 @@ class RawSessionManager {
         val dt = (timestampNanos - currentHold.lastTimestamp) / 1_000_000_000.0
         if (dt <= 0) return
         currentHold.lastTimestamp = timestampNanos
+
+        // Pass the perfectly despiked data into your math engine
         val accel1D = projector.projectTo1D(x, y, z)
         velocity = (velocity + accel1D * dt) * leakFactor
         position = (position + velocity * dt) * leakFactor
@@ -169,18 +212,15 @@ class RawSessionManager {
         val clampedMagnitudeSeries = mutableListOf<Double>()
 
         if (validMags.isNotEmpty()) {
-            // Find the 75th percentile. We use this as a baseline to define "normal" maximums.
             val q3Index = (validMags.size * 0.75).toInt()
             val q3 = validMags[q3Index]
 
-            // Allow spikes to be 2.5x larger than the 75th percentile before we consider them "equipment fumbles"
             val ceiling = q3 * 2.5
 
             rawMagnitudeSeries.forEach { mag ->
                 if (mag.isNaN()) {
                     clampedMagnitudeSeries.add(Double.NaN)
                 } else {
-                    // Clamp extreme spikes to the logical ceiling!
                     clampedMagnitudeSeries.add(if (mag > ceiling) ceiling else mag)
                 }
             }

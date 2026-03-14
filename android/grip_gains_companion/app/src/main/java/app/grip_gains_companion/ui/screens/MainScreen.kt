@@ -20,7 +20,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.Bluetooth
-import androidx.compose.material.icons.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Smartphone
@@ -49,6 +48,7 @@ import app.grip_gains_companion.service.web.WebViewBridge
 import app.grip_gains_companion.ui.components.ForceGraph
 import app.grip_gains_companion.ui.components.TimerWebView
 import app.grip_gains_companion.ui.theme.GripGainsTheme
+import app.grip_gains_companion.util.StatisticsUtils
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -114,20 +114,45 @@ fun MainScreen(
     val sheetHeightPx = remember { Animatable(if (isToolbarVisible) level1Px else 0f) }
     var dragMomentum by remember { mutableFloatStateOf(0f) }
 
+    val currentLevel1Px by rememberUpdatedState(level1Px)
+
+    LaunchedEffect(cachedWebView) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            cachedWebView.setOnScrollChangeListener { _, _, scrollY, _, oldScrollY ->
+                val dy = scrollY - oldScrollY
+                if (scrollY <= 40) {
+                    webViewBridge.setToolbarVisible(true)
+                } else if (Math.abs(dy) > 40) {
+                    val isScrollingUp = dy < 0
+                    // THE FIX: Only allow a downward scroll to hide the drawer IF it is at Level 1!
+                    if (isScrollingUp || sheetHeightPx.value <= currentLevel1Px + 20f) {
+                        webViewBridge.setToolbarVisible(isScrollingUp)
+                    }
+                }
+            }
+        }
+    }
+
     LaunchedEffect(isToolbarVisible, showForceGraph) {
         if (!isToolbarVisible) {
-            sheetHeightPx.animateTo(0f, tween(300))
+            // THE FIX: Only animate down if it's at Level 1. Ignore the command completely if expanded!
+            if (sheetHeightPx.value <= level1Px + 20f) {
+                sheetHeightPx.animateTo(0f, tween(300))
+            }
         } else if (sheetHeightPx.value < level1Px || !showForceGraph) {
             sheetHeightPx.animateTo(level1Px, spring(dampingRatio = 0.7f, stiffness = 400f))
         }
     }
 
-    val dragModifier = if (showForceGraph && isToolbarVisible) {
+    // THE FIX: Remove "&& isToolbarVisible". If showForceGraph is true, it is draggable. Period.
+    val dragModifier = if (showForceGraph) {
         Modifier.pointerInput(Unit) {
             detectVerticalDragGestures(
                 onDragStart = {
                     dragMomentum = 0f
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    // Force the app to sync its state back to visible the moment you grab it
+                    if (!isToolbarVisible) webViewBridge.setToolbarVisible(true)
                 },
                 onDragEnd = {
                     coroutineScope.launch {
@@ -174,15 +199,14 @@ fun MainScreen(
     GripGainsTheme(darkTheme = true) {
         Box(modifier = Modifier.fillMaxSize().background(Color(0xFF1A2231))) {
 
-            val websiteBottomPadding = with(density) {
-                (sheetHeightPx.value - 28.dp.toPx()).coerceAtLeast(0f).toDp()
-            }
+            // THE RESIZING FIX:
+            // We lock the bottom padding to the collapsed height of the drawer.
+            // This guarantees the WebView never resizes when the drawer opens, stopping the spazzing!
 
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .windowInsetsPadding(WindowInsets.statusBars)
-                    .padding(bottom = websiteBottomPadding)
             ) {
                 TimerWebView(
                     bridge = webViewBridge,
@@ -311,7 +335,7 @@ fun MainScreen(
                                     }) {
                                         val displayWeight = if (useLbs) manualTargetWeight * 2.20462 else manualTargetWeight
                                         Text(
-                                            text = "${String.format("%.1f", displayWeight)} ${if (useLbs) "lbs" else "kg"}",
+                                            text = "${String.format(java.util.Locale.US, "%.1f", displayWeight)} ${if (useLbs) "lbs" else "kg"}",
                                             style = MaterialTheme.typography.titleMedium,
                                             fontWeight = FontWeight.Bold,
                                             color = Color.White
@@ -356,7 +380,7 @@ fun MainScreen(
                                                 fontSize = 64.sp,
                                                 letterSpacing = (-2).sp
                                             ),
-                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
+                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                                             modifier = Modifier.align(Alignment.Center)
                                         )
 
@@ -392,9 +416,16 @@ fun MainScreen(
                                     }
                                 }
 
-                                val mean = progressorHandler.sessionMean.collectAsState().value ?: 0.0
-                                val median = progressorHandler.weightMedian.collectAsState().value ?: 0.0
-                                val stdDev = progressorHandler.sessionStdDev.collectAsState().value ?: 0.0
+                                val forceHistory by progressorHandler.forceHistory.collectAsState()
+                                val activeForces = remember(forceHistory) {
+                                    val now = System.currentTimeMillis()
+                                    val cutoff = now - (forceGraphWindow * 1000L)
+                                    forceHistory.filter { it.timestamp.time >= cutoff && it.force > 2.0 }.map { it.force }
+                                }
+
+                                val mean = if (activeForces.isNotEmpty()) StatisticsUtils.mean(activeForces) else 0.0
+                                val median = if (activeForces.isNotEmpty()) StatisticsUtils.median(activeForces) else 0.0
+                                val stdDev = if (activeForces.isNotEmpty()) StatisticsUtils.standardDeviation(activeForces) else 0.0
 
                                 val fmt = { value: Double ->
                                     if (value > 0.0) String.format(java.util.Locale.US, "%.1f", if (useLbs) value * 2.20462 else value)

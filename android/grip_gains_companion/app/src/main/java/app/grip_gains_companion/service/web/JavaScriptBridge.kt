@@ -6,7 +6,7 @@ import app.grip_gains_companion.config.AppConstants
  * JavaScript code snippets for interacting with the gripgains.ca web UI
  */
 object JavaScriptBridge {
-    
+
     /**
      * Close the weight picker if it's open on page load
      * This handles the case where Vue restores the picker state after a page refresh
@@ -27,7 +27,7 @@ object JavaScriptBridge {
             }
         })();
     """.trimIndent()
-    
+
     /**
      * Patch Date.now() and timer functions to account for background time
      */
@@ -95,7 +95,7 @@ object JavaScriptBridge {
             };
         })();
     """.trimIndent()
-    
+
     /**
      * Click the fail button
      */
@@ -120,7 +120,7 @@ object JavaScriptBridge {
         })();
     """.trimIndent()
 
-    
+
     /**
      * Check if fail button is enabled and send result to Android
      */
@@ -132,7 +132,7 @@ object JavaScriptBridge {
             Android.onButtonStateChanged(enabled);
         })();
     """.trimIndent()
-    
+
     /**
      * MutationObserver script for real-time button state changes
      */
@@ -173,7 +173,7 @@ object JavaScriptBridge {
             }
         })();
     """.trimIndent()
-    
+
     /**
      * Scrape target weight from the session preview header
      */
@@ -190,7 +190,7 @@ object JavaScriptBridge {
             Android.onTargetWeightChanged(null);
         })();
     """.trimIndent()
-    
+
     /**
      * MutationObserver script for real-time target weight and duration changes
      */
@@ -270,7 +270,7 @@ object JavaScriptBridge {
             }
         })();
     """.trimIndent()
-    
+
     /**
      * Generate script to set target weight in the web UI picker
      */
@@ -327,7 +327,7 @@ object JavaScriptBridge {
             }, 50);
         })();
     """.trimIndent()
-    
+
     /**
      * Scrape available weight options from the picker
      */
@@ -404,7 +404,7 @@ object JavaScriptBridge {
             }, 100);
         })();
     """.trimIndent()
-    
+
     /**
      * MutationObserver script for remaining time from timer display
      */
@@ -461,7 +461,7 @@ object JavaScriptBridge {
             }
         })();
     """.trimIndent()
-    
+
     /**
      * MutationObserver script to detect "Save to Database" button appearance
      */
@@ -504,6 +504,30 @@ object JavaScriptBridge {
             } else {
                 setupSaveButtonObserver();
             }
+        })();
+    """.trimIndent()
+
+    val scrollVelocityObserverScript = """
+        (function() {
+            let lastScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+            
+            window.addEventListener('scroll', function(e) {
+                // Get the scroll position from either the window or the scrolling container
+                let target = e.target === document ? window : e.target;
+                let currentScrollY = target.scrollY || target.scrollTop || 0;
+                
+                let velocity = Math.abs(currentScrollY - lastScrollY);
+                
+                // Only trigger if the user "flicks" more than 20 pixels at once
+                if (velocity > 20) { 
+                    if (currentScrollY > lastScrollY) {
+                        Android.onScrollVelocityDetected(true);  // Scrolling Down
+                    } else {
+                        Android.onScrollVelocityDetected(false); // Scrolling Up
+                    }
+                }
+                lastScrollY = currentScrollY;
+            }, { passive: true, capture: true });
         })();
     """.trimIndent()
 }

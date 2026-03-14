@@ -73,7 +73,6 @@ class WebViewBridge {
 
     fun clickFailButton() {
         webView?.post {
-            // Evaluates the exact script you provided to click the fail button
             webView?.evaluateJavascript(JavaScriptBridge.clickFailButton, null)
         }
     }
@@ -87,7 +86,6 @@ class WebViewBridge {
             (function() {
                 let attempts = 0;
                 let clicker = setInterval(() => {
-                    // Finds the button even if it's hidden inside the Session Actions accordion
                     let btn = document.querySelector('button.btn-danger.btn-lg.session-actions-end');
                     if (btn && !btn.disabled) { 
                         btn.click(); 
@@ -101,12 +99,11 @@ class WebViewBridge {
     }
 
     // =========================================================================
-    // JAVASCRIPT INTERFACES (Must match names in JavaScriptBridge.kt exactly)
+    // JAVASCRIPT INTERFACES
     // =========================================================================
 
     @JavascriptInterface
     fun onTargetDurationChanged(seconds: Int) {
-        // If the JS couldn't find a duration, it sends -1. We must convert that to null!
         _targetDuration.value = if (seconds == -1) null else seconds
     }
 
@@ -151,7 +148,6 @@ class WebViewBridge {
             val value = digits.toDoubleOrNull()
 
             if (value != null) {
-                // ALWAYS store as kg internally!
                 _targetWeight.value = if (isLbs) value / 2.20462 else value
             } else {
                 _targetWeight.value = null
@@ -164,8 +160,6 @@ class WebViewBridge {
         _saveButtonAppeared.value = true
     }
 
-    // You mentioned the iOS app handles the JSON stats. If your JavaScriptBridge
-    // eventually injects a script to extract the JSON, it will call this.
     @JavascriptInterface
     fun onRepStatsExtracted(jsonString: String) {
         _latestRepStats.value = jsonString
@@ -176,4 +170,11 @@ class WebViewBridge {
 
     @JavascriptInterface
     fun onWeightOptionsChanged(jsonArrayStr: String, isLbs: Boolean) { }
+
+    // ---> NEW: SCROLL VELOCITY DETECTOR <---
+    @JavascriptInterface
+    fun onScrollVelocityDetected(isScrollingDown: Boolean) {
+        // If scrolling down fast, hide toolbar (false). If scrolling up fast, show toolbar (true).
+        _isToolbarVisible.value = !isScrollingDown
+    }
 }

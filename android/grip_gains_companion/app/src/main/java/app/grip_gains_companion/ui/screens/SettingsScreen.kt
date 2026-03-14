@@ -154,7 +154,8 @@ fun SettingsScreen(
                         activeSource = if (connectionState == ConnectionState.Connected) connectedDeviceName ?: "Bluetooth Scale" else "[No Device]",
                         statusColor = if (connectionState == ConnectionState.Connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
                         onClick = {
-                            if (btAdapter?.isEnabled == true) {
+                            val isBtOn = (context.getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager).adapter?.isEnabled == true
+                            if (isBtOn) {
                                 bluetoothManager.startScanning()
                                 showTensionSheet = true
                             } else {
@@ -237,7 +238,8 @@ fun SettingsScreen(
                                         MaterialTheme.colorScheme.error
                                     },
                                     onClick = {
-                                        if (btAdapter?.isEnabled == true) {
+                                        val isBtOn = (context.getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager).adapter?.isEnabled == true
+                                        if (isBtOn) {
                                             showKinematicsSheet = true
                                         } else {
                                             enableBluetoothLauncher.launch(android.content.Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE))
@@ -616,11 +618,13 @@ fun SettingsScreen(
 }
 
 // Ensure the massive firmware string is kept at the bottom as usual!
+// Ensure the massive firmware string is kept at the bottom as usual!
 private const val M5_FIRMWARE_CODE = """#include <M5Unified.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <math.h>
 
 BLEServer* pServer = NULL;
 BLECharacteristic* pCharacteristic = NULL;
@@ -635,19 +639,39 @@ struct AccelData {
   float z;
 };
 
+unsigned long lastUpdate = 0;
+const int updateInterval = 20; 
+const float dt = 0.02f;
+unsigned long lastBatteryUpdate = 0;
+
+float pitch = 0.0f;
+float roll = 0.0f;
+
+void updateScreenStatus() {
+  M5.Display.fillScreen(deviceConnected ? TFT_GREEN : TFT_RED);
+  M5.Display.setTextSize(2);
+  M5.Display.setTextColor(TFT_WHITE, deviceConnected ? TFT_GREEN : TFT_RED);
+  M5.Display.setCursor(10, 20);
+  M5.Display.println(deviceConnected ? "CONNECTED" : "PAIRING..");
+  
+  int bat = M5.Power.getBatteryLevel();
+  M5.Display.setTextSize(1.5);
+  M5.Display.setCursor(10, 80);
+  if (bat < 0) M5.Display.println("Bat: CHG");
+  else M5.Display.printf("Bat: %d%%", bat);
+  
+  // BATTERY FIX: Dim the screen massively when connected to save power!
+  M5.Display.setBrightness(deviceConnected ? 30 : 150);
+}
+
 class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
       deviceConnected = true;
-      M5.Display.fillScreen(GREEN);
-      M5.Display.setCursor(10, 40);
-      M5.Display.println("CONNECTED");
+      updateScreenStatus();
     }
-
     void onDisconnect(BLEServer* pServer) {
       deviceConnected = false;
-      M5.Display.fillScreen(RED);
-      M5.Display.setCursor(10, 40);
-      M5.Display.println("DISCONNECTED");
+      updateScreenStatus();
       pServer->startAdvertising(); 
     }
 };
@@ -656,8 +680,9 @@ void setup() {
   auto cfg = M5.config();
   M5.begin(cfg);
   
+  M5.Display.fillScreen(TFT_BLUE);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLUE);
   M5.Display.setTextSize(1.5);
-  M5.Display.fillScreen(BLUE);
   M5.Display.setCursor(10, 40);
   M5.Display.println("BOOTING BLE...");
 
@@ -673,22 +698,63 @@ void setup() {
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
   pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x0C); 
+  pAdvertising->setMaxPreferred(0x18); 
   BLEDevice::startAdvertising();
 
-  M5.Display.fillScreen(BLACK);
-  M5.Display.setCursor(10, 40);
-  M5.Display.println("READY TO\nPAIR");
+  updateScreenStatus();
 }
 
 void loop() {
   M5.update();
-  if (deviceConnected) {
-    float ax, ay, az;
-    M5.Imu.getAccel(&ax, &ay, &az);
-    AccelData data;
-    data.x = ax; data.y = ay; data.z = az;
-    pCharacteristic->setValue((uint8_t*)&data, sizeof(AccelData));
-    pCharacteristic->notify();
+  unsigned long now = millis();
+  
+  if (now - lastUpdate >= updateInterval) {
+    lastUpdate = now;
+    
+    if (deviceConnected) {
+      float ax, ay, az;
+      float gx, gy, gz;
+      
+      M5.Imu.getAccel(&ax, &ay, &az);
+      M5.Imu.getGyro(&gx, &gy, &gz);
+      
+      float accelPitch = atan2(ay, az) * 180.0f / M_PI;
+      float accelRoll  = atan2(-ax, sqrt(ay * ay + az * az)) * 180.0f / M_PI;
+      
+      pitch = 0.98f * (pitch + gx * dt) + 0.02f * accelPitch;
+      roll  = 0.98f * (roll  + gy * dt) + 0.02f * accelRoll;
+      
+      float pitchRad = pitch * M_PI / 180.0f;
+      float rollRad  = roll  * M_PI / 180.0f;
+      
+      float gravX = -sin(rollRad);
+      float gravY = sin(pitchRad);
+      float gravZ = cos(pitchRad) * cos(rollRad);
+      
+      float finalX = (ax - gravX) * 9.80665f;
+      float finalY = (ay - gravY) * 9.80665f;
+      float finalZ = (az - gravZ) * 9.80665f;
+      
+      // THE FIX: HARDWARE NOISE DEADZONE
+      // If the movement is less than 0.6 m/s^2, it is just table vibration. Clamp to 0.
+      float noiseFloor = 0.6f;
+      if (abs(finalX) < noiseFloor) finalX = 0.0f;
+      if (abs(finalY) < noiseFloor) finalY = 0.0f;
+      if (abs(finalZ) < noiseFloor) finalZ = 0.0f;
+      
+      AccelData data;
+      data.x = finalX;
+      data.y = finalY;
+      data.z = finalZ;
+      
+      pCharacteristic->setValue((uint8_t*)&data, sizeof(AccelData));
+      pCharacteristic->notify();
+    }
   }
-  delay(20); 
+  
+  if (now - lastBatteryUpdate >= 5000) {
+    lastBatteryUpdate = now;
+    updateScreenStatus();
+  }
 }"""

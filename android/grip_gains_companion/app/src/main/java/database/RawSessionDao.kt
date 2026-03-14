@@ -16,6 +16,9 @@ interface RawSessionDao {
     @Query("SELECT * FROM raw_sessions WHERE id = :id LIMIT 1")
     fun getSessionById(id: Long): Flow<RawSessionEntity?>
 
+    @Query("DELETE FROM raw_sessions WHERE id = :id")
+    fun deleteSessionById(id: Long) // No "suspend", no ": Int"
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun insert(session: RawSessionEntity): Long
 

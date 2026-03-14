@@ -70,6 +70,10 @@ import java.util.UUID
 
 class MainActivity : ComponentActivity() {
 
+    private var gravityX = 0f
+    private var gravityY = 0f
+    private var gravityZ = 0f
+
     private lateinit var bluetoothManager: BluetoothManager
     private lateinit var m5StickManager: M5StickManager
     private lateinit var progressorHandler: ProgressorHandler
@@ -127,16 +131,17 @@ class MainActivity : ComponentActivity() {
                 } else {
                     currentManualWeight
                 }
+
+                // SPIKE FIX: Ignore movement if tension is basically zero
+                val activeX = if (activeTension > 2.0) latestX else 0f
+                val activeY = if (activeTension > 2.0) latestY else 0f
+                val activeZ = if (activeTension > 2.0) latestZ else 0f
+
                 rawSessionManager.addSample(
-                    latestX,
-                    latestY,
-                    latestZ,
-                    activeTension,
-                    event.timestamp
+                    activeX, activeY, activeZ, activeTension, event.timestamp
                 )
             }
         }
-
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
     }
 
@@ -821,9 +826,9 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             m5StickManager.accelerationData.collect { (m5x, m5y, m5z) ->
                 if (activeKinematicsSource == KinematicsSource.M5STICK) {
-                    latestX = m5x
-                    latestY = m5y
-                    latestZ = m5z
+
+                    // Gravity is now stripped natively on the M5Stick hardware!
+                    // The data arriving is already pure Linear Acceleration in m/s^2.
 
                     if (rawSessionManager.isHoldActive) {
                         val isConnected = bluetoothManager.connectionState.value == ConnectionState.Connected
@@ -837,8 +842,13 @@ class MainActivity : ComponentActivity() {
                             currentManualWeight
                         }
 
+                        // SPIKE FIX: Ignore movements if tension is below 2.0kg (setup/put-down)
+                        val activeX = if (activeTension > 2.0) m5x else 0f
+                        val activeY = if (activeTension > 2.0) m5y else 0f
+                        val activeZ = if (activeTension > 2.0) m5z else 0f
+
                         rawSessionManager.addSample(
-                            latestX, latestY, latestZ, activeTension, System.currentTimeMillis() * 1_000_000
+                            activeX, activeY, activeZ, activeTension, System.currentTimeMillis() * 1_000_000
                         )
                     }
                 }

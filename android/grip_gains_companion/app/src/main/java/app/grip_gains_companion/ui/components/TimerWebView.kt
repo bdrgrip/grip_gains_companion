@@ -53,6 +53,7 @@ fun TimerWebView(
                         view?.evaluateJavascript(JavaScriptBridge.targetWeightObserverScript, null)
                         view?.evaluateJavascript(JavaScriptBridge.saveButtonObserverScript, null)
                         view?.evaluateJavascript(JavaScriptBridge.basicTimerEndObserverScript, null)
+                        view?.evaluateJavascript(JavaScriptBridge.scrollVelocityObserverScript, null)
                     }
 
                     override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {

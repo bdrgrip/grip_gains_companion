@@ -16,7 +16,7 @@ class WHC06Service {
 
     companion object {
         private const val TAG = "WHC06Service"
-        private const val DISCONNECT_TIMEOUT_MS = 5000L  // 5 seconds without data = disconnected
+        private const val DISCONNECT_TIMEOUT_M10 = 10000L  // 5 seconds without data = disconnected
     }
 
     var onForceSample: ((Double, Long) -> Unit)? = null
@@ -84,7 +84,7 @@ class WHC06Service {
             Log.i(TAG, "WHC06 disconnect timeout - no advertisements received")
             onDisconnect?.invoke()
         }
-        handler.postDelayed(disconnectTimer!!, DISCONNECT_TIMEOUT_MS)
+        handler.postDelayed(disconnectTimer!!, DISCONNECT_TIMEOUT_M10)
     }
 
     private fun cancelDisconnectTimer() {

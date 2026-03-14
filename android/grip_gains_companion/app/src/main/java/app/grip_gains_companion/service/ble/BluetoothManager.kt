@@ -133,8 +133,19 @@ class BluetoothManager(private val context: Context) {
         _discoveredDevices.value = emptyList()
         _connectionState.value = ConnectionState.Scanning
 
-        bluetoothLeScanner = bluetoothAdapter.bluetoothLeScanner
-        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+        bluetoothLeScanner = bluetoothManager.adapter?.bluetoothLeScanner
+
+        if (bluetoothLeScanner == null) {
+            _connectionState.value = ConnectionState.Error("Failed to initialize scanner. Try restarting Bluetooth.")
+            return
+        }
+
+        // AGGRESSIVE SCANNING: Stop Android from throttling your connection
+        val settings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setReportDelay(0)
+            .build()
+
         bluetoothLeScanner?.startScan(null, settings, scanCallback)
     }
 
@@ -150,10 +161,18 @@ class BluetoothManager(private val context: Context) {
             val deviceName = result.device.name
             val deviceAddress = result.device.address
 
-            if (_connectionState.value == ConnectionState.Connected && _connectedDeviceType.value == DeviceType.WEIHENG_WHC06) {
-                if (pendingDevice != null && deviceAddress == pendingDevice?.address) {
-                    whc06Service?.processAdvertisement(result)
+            // THE RECONNECT FIX: Process advertisements if we are Connected OR Reconnecting!
+            val isWhc06Active = _connectedDeviceType.value == DeviceType.WEIHENG_WHC06 || pendingDevice?.type == DeviceType.WEIHENG_WHC06
+            val isExpectedDevice = pendingDevice != null && deviceAddress == pendingDevice?.address
+
+            if (isWhc06Active && isExpectedDevice) {
+                // If we were reconnecting, and we just heard a packet, we are officially connected again!
+                if (_connectionState.value == ConnectionState.Reconnecting || _connectionState.value == ConnectionState.Connecting) {
+                    _connectionState.value = ConnectionState.Connected
+                    _connectedDeviceName.value = pendingDevice?.name ?: "WH-C06"
+                    retryCount = 0
                 }
+                whc06Service?.processAdvertisement(result)
             }
 
             if (deviceName != null && deviceName.isNotBlank()) {
@@ -161,7 +180,7 @@ class BluetoothManager(private val context: Context) {
                     deviceName.contains("Progressor", ignoreCase = true) -> DeviceType.TINDEQ_PROGRESSOR
                     deviceName.contains("PitchSix", ignoreCase = true) || deviceName.contains("Force Board", ignoreCase = true) -> DeviceType.PITCH_SIX_FORCE_BOARD
                     deviceName.contains("WH-C06", ignoreCase = true) || deviceName.contains("IF_B7", ignoreCase = true) -> DeviceType.WEIHENG_WHC06
-                    else -> null // Ignore Smart Fridges!
+                    else -> null
                 }
 
                 if (inferredType != null) {
