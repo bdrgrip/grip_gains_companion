@@ -16,7 +16,7 @@ class WHC06Service {
 
     companion object {
         private const val TAG = "WHC06Service"
-        private const val DISCONNECT_TIMEOUT_M10 = 10000L  // 5 seconds without data = disconnected
+        private const val DISCONNECT_TIMEOUT_M10 = 15000L
     }
 
     var onForceSample: ((Double, Long) -> Unit)? = null

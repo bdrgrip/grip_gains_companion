@@ -11,6 +11,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import app.grip_gains_companion.config.AppConstants
+import app.grip_gains_companion.data.PreferencesRepository.Keys.DEVICE_ALIASES
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -76,6 +77,9 @@ class PreferencesRepository(private val context: Context) {
         val ENABLE_ANALYTICS = booleanPreferencesKey("enable_analytics")
         val SHOW_ISO_SUMMARY = booleanPreferencesKey("show_iso_summary")
         val SHOW_RAW_SUMMARY = booleanPreferencesKey("show_raw_summary")
+
+        val DEVICE_ALIASES = stringPreferencesKey("device_aliases")
+
     }
 
     // --- REQUESTED DEFAULT: ISOTONIC MODE OFF ---
@@ -282,6 +286,33 @@ class PreferencesRepository(private val context: Context) {
             it[Keys.LAST_CONNECTED_DEVICE_ADDRESS] = value
         } else {
             it.remove(Keys.LAST_CONNECTED_DEVICE_ADDRESS)
+        }
+    }
+
+    // 1. Expose the map of MAC Addresses to Custom Names
+    val deviceAliases: Flow<Map<String, String>> = dataStore.data.map { preferences ->
+        val rawString = preferences[DEVICE_ALIASES] ?: ""
+        if (rawString.isEmpty()) emptyMap()
+        else rawString.split("||").associate {
+            val parts = it.split("::", limit = 2)
+            parts[0] to (parts.getOrNull(1) ?: "")
+        }
+    }
+
+    // 2. Save a new alias (or remove it if blank)
+    suspend fun setDeviceAlias(macAddress: String, alias: String) {
+        dataStore.edit { preferences ->
+            val current = preferences[DEVICE_ALIASES] ?: ""
+            val map = if (current.isEmpty()) mutableMapOf()
+            else current.split("||").associate {
+                val p = it.split("::", limit = 2)
+                p[0] to (p.getOrNull(1) ?: "")
+            }.toMutableMap()
+
+            if (alias.isBlank()) map.remove(macAddress) // Revert to default name
+            else map[macAddress] = alias
+
+            preferences[DEVICE_ALIASES] = map.entries.joinToString("||") { "${it.key}::${it.value}" }
         }
     }
 

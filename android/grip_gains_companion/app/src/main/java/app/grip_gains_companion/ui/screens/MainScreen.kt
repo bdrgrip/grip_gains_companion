@@ -2,7 +2,10 @@ package app.grip_gains_companion.ui.screens
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
@@ -20,7 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.Bluetooth
-import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Watch
@@ -40,7 +43,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.coerceAtLeast
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.grip_gains_companion.data.PreferencesRepository
 import app.grip_gains_companion.model.ConnectionState
+import app.grip_gains_companion.model.ForceDevice
 import app.grip_gains_companion.model.KinematicsSource
 import app.grip_gains_companion.service.ProgressorHandler
 import app.grip_gains_companion.service.ble.BluetoothManager
@@ -54,6 +60,7 @@ import kotlinx.coroutines.launch
 
 @Composable
 fun MainScreen(
+    preferencesRepository: PreferencesRepository,
     bluetoothManager: BluetoothManager,
     progressorHandler: ProgressorHandler,
     webViewBridge: WebViewBridge,
@@ -70,14 +77,15 @@ fun MainScreen(
     enableAnalytics: Boolean,
     m5ConnectionState: ConnectionState,
     m5Data: Triple<Float, Float, Float>,
+    deviceAliases: Map<String, String> = emptyMap(),
     onSettingsTap: () -> Unit,
     onHistoryTap: () -> Unit,
     onUnitToggle: () -> Unit,
     onSetManualWeightTap: () -> Unit,
-    onShowTensionSheet: () -> Unit,
     enableIsotonicMode: Boolean,
     onShowKinematicsSheet: () -> Unit
 ) {
+    val context = LocalContext.current
     val isToolbarVisible by webViewBridge.isToolbarVisible.collectAsState()
     val currentUrl by webViewBridge.currentUrl.collectAsState()
     val isBasicTimerPage = currentUrl.contains("basic-timer")
@@ -87,9 +95,32 @@ fun MainScreen(
     val coroutineScope = rememberCoroutineScope()
     var canGoBack by remember { mutableStateOf(false) }
 
+    // --- BLUETOOTH NATIVE LAUNCHER (THE FIX) ---
+    val btManager = remember { context.getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager }
+    val btAdapter = btManager?.adapter
+    val enableBluetoothLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {}
+
+    // --- BLUETOOTH & ALIAS STATES ---
     val connectionState by bluetoothManager.connectionState.collectAsState()
     val isConnected = connectionState == ConnectionState.Connected
     val isReconnecting = connectionState == ConnectionState.Reconnecting
+
+    val connectedAddress by bluetoothManager.connectedDeviceAddress.collectAsState()
+    val connectedName by bluetoothManager.connectedDeviceName.collectAsState()
+    val discoveredDevices by bluetoothManager.discoveredDevices.collectAsStateWithLifecycle()
+
+    val deviceAliases by preferencesRepository.deviceAliases.collectAsStateWithLifecycle(initialValue = emptyMap())
+
+    // Dialog States
+    var showTensionSheet by remember { mutableStateOf(false) }
+    var deviceToAlias by remember { mutableStateOf<ForceDevice?>(null) }
+    var aliasInput by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        bluetoothManager.startScanning()
+    }
 
     LaunchedEffect(currentUrl) {
         kotlinx.coroutines.delay(100)
@@ -113,7 +144,6 @@ fun MainScreen(
 
     val sheetHeightPx = remember { Animatable(if (isToolbarVisible) level1Px else 0f) }
     var dragMomentum by remember { mutableFloatStateOf(0f) }
-
     val currentLevel1Px by rememberUpdatedState(level1Px)
 
     LaunchedEffect(cachedWebView) {
@@ -124,7 +154,6 @@ fun MainScreen(
                     webViewBridge.setToolbarVisible(true)
                 } else if (Math.abs(dy) > 40) {
                     val isScrollingUp = dy < 0
-                    // THE FIX: Only allow a downward scroll to hide the drawer IF it is at Level 1!
                     if (isScrollingUp || sheetHeightPx.value <= currentLevel1Px + 20f) {
                         webViewBridge.setToolbarVisible(isScrollingUp)
                     }
@@ -135,7 +164,6 @@ fun MainScreen(
 
     LaunchedEffect(isToolbarVisible, showForceGraph) {
         if (!isToolbarVisible) {
-            // THE FIX: Only animate down if it's at Level 1. Ignore the command completely if expanded!
             if (sheetHeightPx.value <= level1Px + 20f) {
                 sheetHeightPx.animateTo(0f, tween(300))
             }
@@ -144,14 +172,12 @@ fun MainScreen(
         }
     }
 
-    // THE FIX: Remove "&& isToolbarVisible". If showForceGraph is true, it is draggable. Period.
     val dragModifier = if (showForceGraph) {
         Modifier.pointerInput(Unit) {
             detectVerticalDragGestures(
                 onDragStart = {
                     dragMomentum = 0f
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    // Force the app to sync its state back to visible the moment you grab it
                     if (!isToolbarVisible) webViewBridge.setToolbarVisible(true)
                 },
                 onDragEnd = {
@@ -199,15 +225,7 @@ fun MainScreen(
     GripGainsTheme(darkTheme = true) {
         Box(modifier = Modifier.fillMaxSize().background(Color(0xFF1A2231))) {
 
-            // THE RESIZING FIX:
-            // We lock the bottom padding to the collapsed height of the drawer.
-            // This guarantees the WebView never resizes when the drawer opens, stopping the spazzing!
-
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .windowInsetsPadding(WindowInsets.statusBars)
-            ) {
+            Column(modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
                 TimerWebView(
                     bridge = webViewBridge,
                     cachedWebView = cachedWebView,
@@ -228,16 +246,9 @@ fun MainScreen(
                 color = Color(0xFF1E2737),
                 shadowElevation = 16.dp
             ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(with(density) { level3Px.toDp() })
-                ) {
+                Box(modifier = Modifier.fillMaxWidth().height(with(density) { level3Px.toDp() })) {
                     Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(horizontal = 8.dp)
-                            .padding(top = 8.dp)
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp).padding(top = 8.dp)
                     ) {
                         if (showForceGraph) {
                             Box(
@@ -286,12 +297,21 @@ fun MainScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+
+                                val displayName = deviceAliases[connectedAddress] ?: connectedName ?: "No Scale"
+
                                 AssistChip(
                                     onClick = {
                                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        onShowTensionSheet()
+                                        // THE BLUETOOTH FIX: Prompt for BT natively!
+                                        if (btAdapter?.isEnabled == true) {
+                                            bluetoothManager.startScanning()
+                                            showTensionSheet = true
+                                        } else {
+                                            enableBluetoothLauncher.launch(Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                                        }
                                     },
-                                    label = { Text(if (isConnected) "Scale" else "No Scale", fontWeight = FontWeight.Bold) },
+                                    label = { Text(if (isConnected) displayName else "No Scale", fontWeight = FontWeight.Bold) },
                                     leadingIcon = { Icon(Icons.Default.Bluetooth, null, modifier = Modifier.size(16.dp)) },
                                     colors = AssistChipDefaults.assistChipColors(
                                         containerColor = if (isConnected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
@@ -313,7 +333,13 @@ fun MainScreen(
                                     AssistChip(
                                         onClick = {
                                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                            onShowKinematicsSheet()
+                                            // THE BLUETOOTH FIX: Prompt for BT natively!
+                                            if (btAdapter?.isEnabled == true) {
+                                                onShowKinematicsSheet() // Still triggers scan in MainActivity
+                                                showTensionSheet = false // Hide other sheet if open
+                                            } else {
+                                                enableBluetoothLauncher.launch(Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                                            }
                                         },
                                         label = { Text(m5Label, fontWeight = FontWeight.Bold) },
                                         leadingIcon = { Icon(m5Icon, null, modifier = Modifier.size(16.dp)) },
@@ -461,6 +487,123 @@ fun MainScreen(
                         }
                     }
                 }
+            }
+
+            // --- SIBLING DIALOGS ---
+            if (showTensionSheet) {
+                AlertDialog(
+                    onDismissRequest = { showTensionSheet = false },
+                    shape = RoundedCornerShape(28.dp),
+                    title = { Text("Select Tension Source", fontWeight = FontWeight.Bold) },
+                    text = {
+                        Column {
+                            if (connectionState == ConnectionState.Connected) {
+                                TextButton(
+                                    onClick = { bluetoothManager.disconnect(); showTensionSheet = false },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Disconnect Current Scale", color = MaterialTheme.colorScheme.error)
+                                }
+                                Spacer(modifier = Modifier.height(16.dp))
+                            }
+
+                            if (discoveredDevices.isEmpty() && connectionState != ConnectionState.Connected) {
+                                Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                                    CircularProgressIndicator()
+                                }
+                            } else {
+                                LazyColumn(modifier = Modifier.heightIn(max = 350.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    items(discoveredDevices) { device ->
+                                        Surface(
+                                            onClick = {
+                                                bluetoothManager.connect(device)
+                                                showTensionSheet = false
+                                            },
+                                            shape = RoundedCornerShape(16.dp),
+                                            color = MaterialTheme.colorScheme.surfaceVariant,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            @SuppressLint("MissingPermission")
+                                            val defaultName = device.name ?: "Unknown Device"
+                                            val displayName = deviceAliases[device.address] ?: defaultName
+
+                                            ListItem(
+                                                headlineContent = { Text(displayName, fontWeight = FontWeight.Bold) },
+                                                supportingContent = { Text(device.address) },
+                                                leadingContent = { Icon(Icons.Default.Bluetooth, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                                                trailingContent = {
+                                                    IconButton(
+                                                        onClick = {
+                                                            aliasInput = if (deviceAliases.containsKey(device.address)) displayName else ""
+                                                            deviceToAlias = device
+                                                            showTensionSheet = false
+                                                        }
+                                                    ) {
+                                                        Icon(Icons.Default.Edit, contentDescription = "Edit Name", modifier = Modifier.size(20.dp))
+                                                    }
+                                                },
+                                                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { showTensionSheet = false }) { Text("Close") }
+                    }
+                )
+            }
+
+            if (deviceToAlias != null) {
+                AlertDialog(
+                    onDismissRequest = { deviceToAlias = null },
+                    shape = RoundedCornerShape(24.dp),
+                    title = { Text("Rename Device", fontWeight = FontWeight.Bold) },
+                    text = {
+                        Column {
+                            Text(
+                                text = "Hardware MAC: ${deviceToAlias?.address}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            OutlinedTextField(
+                                value = aliasInput,
+                                onValueChange = { aliasInput = it },
+                                label = { Text("Custom Name") },
+                                placeholder = { Text(deviceToAlias?.name ?: "e.g. My Progressor") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            if (deviceAliases.containsKey(deviceToAlias?.address)) {
+                                TextButton(
+                                    onClick = {
+                                        coroutineScope.launch { preferencesRepository.setDeviceAlias(deviceToAlias!!.address, "") }
+                                        deviceToAlias = null
+                                    },
+                                    modifier = Modifier.padding(top = 8.dp)
+                                ) {
+                                    Text("Remove Custom Name", color = MaterialTheme.colorScheme.error)
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        Button(onClick = {
+                            coroutineScope.launch {
+                                deviceToAlias?.let {
+                                    preferencesRepository.setDeviceAlias(it.address, aliasInput.trim())
+                                }
+                                deviceToAlias = null
+                            }
+                        }) { Text("Save") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { deviceToAlias = null }) { Text("Cancel") }
+                    }
+                )
             }
         }
     }

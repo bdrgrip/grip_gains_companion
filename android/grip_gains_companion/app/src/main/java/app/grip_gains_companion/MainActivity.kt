@@ -345,6 +345,10 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            LaunchedEffect(Unit) {
+                bluetoothManager.startScanning()
+            }
+
             var weightInputText by remember { mutableStateOf(effectiveTargetWeight.toString()) }
 
             val baseContext = LocalContext.current
@@ -453,6 +457,7 @@ class MainActivity : ComponentActivity() {
                                     enableAnalytics = enableAnalytics,
                                     m5ConnectionState = m5State,
                                     m5Data = m5Data,
+                                    preferencesRepository = preferencesRepository,
                                     onSettingsTap = { navController.navigate("settings") },
                                     onHistoryTap = { navController.navigate("history") },
                                     onUnitToggle = { lifecycleScope.launch { preferencesRepository.setUseLbs(!useLbs) } },
@@ -463,13 +468,6 @@ class MainActivity : ComponentActivity() {
                                             String.format(java.util.Locale.US, "%.1f", displayWeight)
                                         }
                                         showWeightPrompt = true
-                                    },
-                                    onShowTensionSheet = {
-                                        if (btAdapter?.isEnabled == true) {
-                                            showTensionSheet = true
-                                        } else {
-                                            enableBluetoothLauncher.launch(Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE))
-                                        }
                                     },
                                     enableIsotonicMode = enableIsotonicMode,
                                     onShowKinematicsSheet = {

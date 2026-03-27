@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.grip_gains_companion.data.PreferencesRepository
 import app.grip_gains_companion.model.ConnectionState
+import app.grip_gains_companion.model.ForceDevice
 import app.grip_gains_companion.model.KinematicsSource
 import app.grip_gains_companion.service.ble.BluetoothManager
 import app.grip_gains_companion.service.web.WebViewBridge
@@ -67,7 +68,6 @@ fun SettingsScreen(
     onViewLogs: () -> Unit,
     onViewHistory: () -> Unit
 ) {
-    // --- INITIALIZE CONTEXT BEFORE CALLING SYSTEM SERVICES ---
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
@@ -77,6 +77,10 @@ fun SettingsScreen(
     val enableBluetoothLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) {}
+
+    val deviceAliases by preferencesRepository.deviceAliases.collectAsStateWithLifecycle(initialValue = emptyMap())
+    var deviceToAlias by remember { mutableStateOf<ForceDevice?>(null) }
+    var aliasInput by remember { mutableStateOf("") }
 
     val useLbs by preferencesRepository.useLbs.collectAsStateWithLifecycle(initialValue = false)
     val showForceGraph by preferencesRepository.showForceGraph.collectAsStateWithLifecycle(initialValue = true)
@@ -139,7 +143,6 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
 
-            // --- TENSION DATA CARD ---
             Card(
                 shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
@@ -202,7 +205,6 @@ fun SettingsScreen(
                 }
             }
 
-            // --- ISOTONICS CARD ---
             Card(
                 shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
@@ -252,7 +254,6 @@ fun SettingsScreen(
                 }
             }
 
-            // --- ANALYTICS & HISTORY CARD ---
             Card(
                 shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
@@ -292,7 +293,6 @@ fun SettingsScreen(
                 }
             }
 
-            // --- DISPLAY & FEEDBACK CARD ---
             Card(
                 shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
@@ -337,7 +337,6 @@ fun SettingsScreen(
                 }
             }
 
-            // --- AUTOMATION CARD ---
             Card(
                 shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
@@ -401,7 +400,6 @@ fun SettingsScreen(
                 }
             }
 
-            // --- SYSTEM COMMANDS CARD ---
             Card(
                 shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
@@ -430,7 +428,6 @@ fun SettingsScreen(
                 }
             }
 
-            // --- RESET BUTTON ---
             Spacer(modifier = Modifier.height(16.dp))
             Button(
                 onClick = { showResetConfirmation = true },
@@ -444,7 +441,10 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(48.dp))
         }
 
-        // --- DIALOGS ---
+        // ====================================================================
+        // --- SIBLING DIALOGS (UN-NESTED) ---
+        // ====================================================================
+
         if (showResetConfirmation) {
             AlertDialog(
                 onDismissRequest = { showResetConfirmation = false },
@@ -497,10 +497,24 @@ fun SettingsScreen(
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         @SuppressLint("MissingPermission")
+                                        val defaultName = device.name ?: "Unknown Device"
+                                        val displayName = deviceAliases[device.address] ?: defaultName
+
                                         ListItem(
-                                            headlineContent = { Text(device.name ?: "Unknown Device", fontWeight = FontWeight.Bold) },
+                                            headlineContent = { Text(displayName, fontWeight = FontWeight.Bold) },
                                             supportingContent = { Text(device.address) },
                                             leadingContent = { Icon(Icons.Default.Bluetooth, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                                            trailingContent = {
+                                                IconButton(
+                                                    onClick = {
+                                                        aliasInput = if (deviceAliases.containsKey(device.address)) displayName else ""
+                                                        deviceToAlias = device
+                                                        showTensionSheet = false // Hide underlying sheet so they don't overlap awkwardly
+                                                    }
+                                                ) {
+                                                    Icon(Icons.Default.Edit, contentDescription = "Edit Name", modifier = Modifier.size(20.dp))
+                                                }
+                                            },
                                             colors = ListItemDefaults.colors(containerColor = Color.Transparent)
                                         )
                                     }
@@ -511,6 +525,56 @@ fun SettingsScreen(
                 },
                 confirmButton = {
                     TextButton(onClick = { showTensionSheet = false }) { Text("Close") }
+                }
+            )
+        }
+
+        if (deviceToAlias != null) {
+            AlertDialog(
+                onDismissRequest = { deviceToAlias = null },
+                shape = RoundedCornerShape(24.dp),
+                title = { Text("Rename Device", fontWeight = FontWeight.Bold) },
+                text = {
+                    Column {
+                        Text(
+                            text = "Hardware MAC: ${deviceToAlias?.address}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = aliasInput,
+                            onValueChange = { aliasInput = it },
+                            label = { Text("Custom Name") },
+                            placeholder = { Text(deviceToAlias?.name ?: "e.g. My Progressor") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        if (deviceAliases.containsKey(deviceToAlias?.address)) {
+                            TextButton(
+                                onClick = {
+                                    coroutineScope.launch { preferencesRepository.setDeviceAlias(deviceToAlias!!.address, "") }
+                                    deviceToAlias = null
+                                },
+                                modifier = Modifier.padding(top = 8.dp)
+                            ) {
+                                Text("Remove Custom Name", color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        coroutineScope.launch {
+                            deviceToAlias?.let {
+                                preferencesRepository.setDeviceAlias(it.address, aliasInput.trim())
+                            }
+                            deviceToAlias = null
+                        }
+                    }) { Text("Save") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { deviceToAlias = null }) { Text("Cancel") }
                 }
             )
         }
@@ -558,11 +622,10 @@ fun SettingsScreen(
                                         if (activeKinematicsSource == KinematicsSource.M5STICK) {
                                             Spacer(modifier = Modifier.height(6.dp))
                                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                                // THE MATERIAL YOU DOT
                                                 Box(
                                                     modifier = Modifier
                                                         .size(8.dp)
-                                                        .clip(RoundedCornerShape(50)) // Circle
+                                                        .clip(RoundedCornerShape(50))
                                                         .background(if (m5ConnectionState == ConnectionState.Connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
                                                 )
                                                 Spacer(modifier = Modifier.width(6.dp))
@@ -592,7 +655,6 @@ fun SettingsScreen(
                         HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        val context = LocalContext.current
                         val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
 
                         OutlinedButton(
@@ -617,8 +679,6 @@ fun SettingsScreen(
     }
 }
 
-// Ensure the massive firmware string is kept at the bottom as usual!
-// Ensure the massive firmware string is kept at the bottom as usual!
 private const val M5_FIRMWARE_CODE = """#include <M5Unified.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
@@ -660,7 +720,6 @@ void updateScreenStatus() {
   if (bat < 0) M5.Display.println("Bat: CHG");
   else M5.Display.printf("Bat: %d%%", bat);
   
-  // BATTERY FIX: Dim the screen massively when connected to save power!
   M5.Display.setBrightness(deviceConnected ? 30 : 150);
 }
 
@@ -736,8 +795,6 @@ void loop() {
       float finalY = (ay - gravY) * 9.80665f;
       float finalZ = (az - gravZ) * 9.80665f;
       
-      // THE FIX: HARDWARE NOISE DEADZONE
-      // If the movement is less than 0.6 m/s^2, it is just table vibration. Clamp to 0.
       float noiseFloor = 0.6f;
       if (abs(finalX) < noiseFloor) finalX = 0.0f;
       if (abs(finalY) < noiseFloor) finalY = 0.0f;
