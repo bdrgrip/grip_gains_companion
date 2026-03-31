@@ -10,7 +10,7 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "app.grip_gains_companion"
+        applicationId = "app.grip_gains_isotonic_companion"
         minSdk = 29
         targetSdk = 36
         versionCode = 2
