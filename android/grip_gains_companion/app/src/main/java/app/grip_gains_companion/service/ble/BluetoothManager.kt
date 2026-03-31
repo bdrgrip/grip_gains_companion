@@ -11,6 +11,7 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
@@ -30,7 +31,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
-import android.bluetooth.le.ScanFilter
 
 @SuppressLint("MissingPermission")
 class BluetoothManager(private val context: Context) {
@@ -75,7 +75,6 @@ class BluetoothManager(private val context: Context) {
     private val _connectedDeviceName = MutableStateFlow<String?>(null)
     val connectedDeviceName: StateFlow<String?> = _connectedDeviceName.asStateFlow()
 
-    // FIXED: This will now properly update!
     private val _connectedDeviceAddress = MutableStateFlow<String?>(null)
     val connectedDeviceAddress: StateFlow<String?> = _connectedDeviceAddress.asStateFlow()
 
@@ -169,9 +168,8 @@ class BluetoothManager(private val context: Context) {
                 if (_connectionState.value == ConnectionState.Reconnecting || _connectionState.value == ConnectionState.Connecting) {
                     _connectionState.value = ConnectionState.Connected
                     _connectedDeviceName.value = pendingDevice?.name ?: "WH-C06"
-                    _connectedDeviceAddress.value = deviceAddress // FIXED: Update the address!
+                    _connectedDeviceAddress.value = deviceAddress
                     retryCount = 0
-
                     cancelRetryTimer()
                 }
                 whc06Service?.processAdvertisement(result)
@@ -238,13 +236,11 @@ class BluetoothManager(private val context: Context) {
             onDisconnect = {
                 if (shouldAutoReconnect) {
                     _connectionState.value = ConnectionState.Reconnecting
-                    // FIXED: DO NOT call scheduleRetry() here!
-                    // The scanner is still running and listening. Calling connectWHC06 again instantly forces a fake "Connected" state causing the UI to flash.
                 } else {
                     _connectionState.value = ConnectionState.Disconnected
                     _connectedDeviceName.value = null
                     _connectedDeviceType.value = null
-                    _connectedDeviceAddress.value = null // FIXED
+                    _connectedDeviceAddress.value = null
                 }
             }
         }
@@ -254,7 +250,7 @@ class BluetoothManager(private val context: Context) {
         _connectionState.value = ConnectionState.Connected
         _connectedDeviceName.value = device.name
         _connectedDeviceType.value = device.type
-        _connectedDeviceAddress.value = device.address // FIXED: Set address immediately
+        _connectedDeviceAddress.value = device.address
         lastConnectedDeviceAddress = device.address
         prefs.edit().putString(KEY_LAST_CONNECTED_DEVICE, device.address).apply()
 
@@ -262,7 +258,6 @@ class BluetoothManager(private val context: Context) {
 
         bluetoothLeScanner = bluetoothAdapter?.bluetoothLeScanner
         val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
-
         val filter = ScanFilter.Builder().setDeviceAddress(device.address).build()
         bluetoothLeScanner?.startScan(listOf(filter), settings, scanCallback)
     }
@@ -284,7 +279,7 @@ class BluetoothManager(private val context: Context) {
         writeCharacteristic = null
         _connectedDeviceName.value = null
         _connectedDeviceType.value = null
-        _connectedDeviceAddress.value = null // FIXED
+        _connectedDeviceAddress.value = null
 
         if (!preserveAutoReconnect) {
             lastConnectedDeviceAddress = null
@@ -304,7 +299,7 @@ class BluetoothManager(private val context: Context) {
                     retryCount = 0
                     _connectionState.value = ConnectionState.Connected
                     _connectedDeviceName.value = gatt.device.name ?: pendingDevice?.type?.displayName ?: "Unknown"
-                    _connectedDeviceAddress.value = gatt.device.address // FIXED
+                    _connectedDeviceAddress.value = gatt.device.address
                     _connectedDeviceType.value = pendingDevice?.type
                     lastConnectedDeviceAddress = gatt.device.address
                     prefs.edit().putString(KEY_LAST_CONNECTED_DEVICE, gatt.device.address).apply()
@@ -318,7 +313,7 @@ class BluetoothManager(private val context: Context) {
                         _connectionState.value = ConnectionState.Disconnected
                         _connectedDeviceName.value = null
                         _connectedDeviceType.value = null
-                        _connectedDeviceAddress.value = null // FIXED
+                        _connectedDeviceAddress.value = null
                     }
                     notifyCharacteristic = null
                     writeCharacteristic = null

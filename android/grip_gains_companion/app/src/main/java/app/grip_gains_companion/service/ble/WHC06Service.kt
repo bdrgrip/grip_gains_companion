@@ -4,25 +4,16 @@ import android.bluetooth.le.ScanResult
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import app.grip_gains_companion.config.AppConstants
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 
-/**
- * Protocol handler for Weiheng WH-C06 hanging scale
- * Uses advertisement-based protocol (no GATT connection)
- */
 class WHC06Service {
 
     companion object {
         private const val TAG = "WHC06Service"
-        private const val DISCONNECT_TIMEOUT_M10 = 15000L
+        private const val DISCONNECT_TIMEOUT_MS = 15000L // Bumped to 15s to tolerate crowded gym interference
     }
 
     var onForceSample: ((Double, Long) -> Unit)? = null
     var onDisconnect: (() -> Unit)? = null
-
-    // THE BYPASS: We let the App's UI dictate the hardware math
     var assumeHardwareIsLbs: Boolean = false
 
     private var baseTimestamp: Long = 0
@@ -43,39 +34,43 @@ class WHC06Service {
     }
 
     fun processAdvertisement(scanResult: ScanResult) {
-        val manufacturerData = scanResult.scanRecord?.getManufacturerSpecificData(AppConstants.WHC06_MANUFACTURER_ID)
-        if (manufacturerData == null) return
-
-        val weight = parseManufacturerData(manufacturerData)
-        if (weight == null) return
+        val rawBytes = scanResult.scanRecord?.bytes ?: return
+        val weight = parseRawBytes(rawBytes) ?: return
 
         resetDisconnectTimer()
         val timestamp = generateTimestamp()
         onForceSample?.invoke(weight, timestamp)
     }
 
-    private fun parseManufacturerData(data: ByteArray): Double? {
-        if (data.size < AppConstants.WHC06_MIN_DATA_SIZE) return null
+    private fun parseRawBytes(data: ByteArray): Double? {
+        var i = 0
+        while (i < data.size - 1) {
+            val length = data[i].toInt() and 0xFF
+            if (length == 0) break
 
-        val weightOffset = AppConstants.WHC06_WEIGHT_BYTE_OFFSET
-        val buffer = ByteBuffer.wrap(data, weightOffset, 2)
-        buffer.order(ByteOrder.BIG_ENDIAN)
-        val rawWeight = buffer.short.toInt()
+            val type = data[i + 1].toInt() and 0xFF
+            if (type == 0xFF && length >= 15) {
+                val dataStart = i + 2
+                val highByte = data[dataStart + 12].toInt() and 0xFF
+                val lowByte = data[dataStart + 13].toInt() and 0xFF
 
-        val rawValue = rawWeight.toDouble() / AppConstants.WHC06_WEIGHT_DIVISOR
+                val rawWeight = (highByte shl 8) or lowByte
+                val rawValue = rawWeight.toDouble() / 100.0
 
-        // THE FIX: We ignore the scale's broken unit byte entirely.
-        // If the app is in LBS, we force the scale's output back into pure KG for the physics engine!
-        return if (assumeHardwareIsLbs) {
-            rawValue / 2.20462
-        } else {
-            rawValue
+                return if (assumeHardwareIsLbs) {
+                    rawValue / 2.20462
+                } else {
+                    rawValue
+                }
+            }
+            i += length + 1
         }
+        return null
     }
 
     private fun generateTimestamp(): Long {
         sampleCounter++
-        return baseTimestamp + (sampleCounter * 1_000_000)
+        return baseTimestamp + (sampleCounter * 10_000)
     }
 
     private fun resetDisconnectTimer() {
@@ -84,7 +79,7 @@ class WHC06Service {
             Log.i(TAG, "WHC06 disconnect timeout - no advertisements received")
             onDisconnect?.invoke()
         }
-        handler.postDelayed(disconnectTimer!!, DISCONNECT_TIMEOUT_M10)
+        handler.postDelayed(disconnectTimer!!, DISCONNECT_TIMEOUT_MS)
     }
 
     private fun cancelDisconnectTimer() {

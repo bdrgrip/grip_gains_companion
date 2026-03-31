@@ -358,6 +358,12 @@ class MainActivity : ComponentActivity() {
 
             val cachedWebView = remember {
                 android.webkit.WebView(darkContext).apply {
+
+                    layoutParams = android.view.ViewGroup.LayoutParams(
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+
                     setBackgroundColor(android.graphics.Color.parseColor("#1A2231"))
 
                     if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.ALGORITHMIC_DARKENING)) {
@@ -367,7 +373,15 @@ class MainActivity : ComponentActivity() {
                     settings.apply {
                         javaScriptEnabled = true
                         domStorageEnabled = true
+                        databaseEnabled = true
+                        useWideViewPort = true
+                        loadWithOverviewMode = true
+                        userAgentString = userAgentString.replace("; wv", "")
                     }
+
+                    android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+
+                    webViewClient = android.webkit.WebViewClient()
 
                     webChromeClient = object : android.webkit.WebChromeClient() {
                         override fun onJsAlert(view: android.webkit.WebView?, url: String?, message: String?, result: android.webkit.JsResult?): Boolean {
