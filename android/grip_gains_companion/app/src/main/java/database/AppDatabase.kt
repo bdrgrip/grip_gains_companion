@@ -12,7 +12,7 @@ import androidx.room.TypeConverters
         IsoSessionEntity::class,
         IsoRepEntity::class
     ],
-    version = 10, // Bumped for the new schema
+    version = 11, // Bumped for the new schema
     exportSchema = false
 )
 @TypeConverters(Converters::class)

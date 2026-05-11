@@ -28,7 +28,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import app.grip_gains_companion.config.AppConstants
 import app.grip_gains_companion.database.IsoRepEntity
-import kotlin.math.abs
+import kotlin.math.ceil
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,7 +37,8 @@ fun IsoSummaryScreen(
     useLbs: Boolean,
     initialGripper: String = "",
     initialSide: String = "Bilateral",
-    recentEquipment: List<String> = emptyList(), // Added for autocomplete
+    recentEquipment: List<String> = emptyList(),
+    isIsotonic: Boolean = false, // ADDED FLAG
     onDismiss: () -> Unit,
     onSave: (String, String) -> Unit
 ) {
@@ -49,6 +50,8 @@ fun IsoSummaryScreen(
     BackHandler { showDiscardDialog = true }
 
     val totalDuration = reps.sumOf { it.duration }
+    val totalIsotonicReps = ceil(totalDuration / 3.0).toInt() // ISOTONIC CALCULATION
+
     val firstTargetWeight = reps.firstOrNull { it.targetWeight != null }?.targetWeight
 
     val targetWeightText = if (firstTargetWeight != null) {
@@ -58,8 +61,11 @@ fun IsoSummaryScreen(
     val hasScrapedData = initialGripper.isNotBlank()
     val isModified = hasScrapedData && (targetGripper != initialGripper || bodySide != initialSide)
 
+    val sessionTitle = if (isIsotonic) "Isotonic Session Complete" else "Isometric Session Complete"
+    val overviewTitle = if (isIsotonic) "Isotonic Overview" else "Isometric Overview"
+
     Scaffold(
-        topBar = { CenterAlignedTopAppBar(title = { Text("Session Complete", fontWeight = FontWeight.Bold) }) },
+        topBar = { CenterAlignedTopAppBar(title = { Text(sessionTitle, fontWeight = FontWeight.Bold) }) },
         bottomBar = {
             Surface(color = Color.Transparent, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 16.dp).navigationBarsPadding()) {
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -88,10 +94,16 @@ fun IsoSummaryScreen(
                     elevation = CardDefaults.elevatedCardElevation(defaultElevation = 8.dp)
                 ) {
                     Column(modifier = Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Isometric Overview", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                        Text(overviewTitle, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
                         Spacer(modifier = Modifier.height(16.dp))
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                            MetricItem("Reps", "${reps.size}")
+                            // DYNAMIC METRICS DISPLAY
+                            if (isIsotonic) {
+                                MetricItem("Sets", "${reps.size}")
+                                MetricItem("Iso Reps", "$totalIsotonicReps")
+                            } else {
+                                MetricItem("Reps", "${reps.size}")
+                            }
                             MetricItem("Duration", "${String.format(java.util.Locale.US, "%.1f", totalDuration)}s")
                             MetricItem("Target", targetWeightText)
                         }
@@ -104,7 +116,6 @@ fun IsoSummaryScreen(
                     modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
                 ) {
-                    // FIX: Parent column gets animateContentSize() to stop the snap!
                     Column(modifier = Modifier.padding(24.dp).animateContentSize()) {
 
                         // --- INLINE AUTOCOMPLETE ---
@@ -168,7 +179,6 @@ fun IsoSummaryScreen(
                         Spacer(modifier = Modifier.height(24.dp))
                         Text("Side", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(bottom = 8.dp))
 
-                        // FIX: Transparent segment buttons for clean UI parity
                         val segColors = SegmentedButtonDefaults.colors(
                             inactiveContainerColor = Color.Transparent,
                             activeContainerColor = MaterialTheme.colorScheme.primaryContainer
@@ -194,7 +204,6 @@ fun IsoSummaryScreen(
                             ) { Text("Right") }
                         }
 
-                        // --- ANIMATED REVERT BOX ---
                         AnimatedVisibility(
                             visible = isModified,
                             enter = expandVertically(animationSpec = tween(300)) + fadeIn(tween(300)),
@@ -230,7 +239,7 @@ fun IsoSummaryScreen(
             }
 
             itemsIndexed(reps) { index, rep ->
-                IsoRepCard(repNum = index + 1, rep = rep, useLbs = useLbs)
+                IsoRepCard(repNum = index + 1, rep = rep, useLbs = useLbs, isIsotonic = isIsotonic)
             }
         }
 
@@ -255,14 +264,14 @@ fun IsoSummaryScreen(
 // --- GLOBALLY SHARED UI COMPONENTS FOR ISOMETRIC SCREENS ---
 
 @Composable
-fun IsoRepCard(repNum: Int, rep: IsoRepEntity, useLbs: Boolean) {
+fun IsoRepCard(repNum: Int, rep: IsoRepEntity, useLbs: Boolean, isIsotonic: Boolean) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
     ) {
         Column(modifier = Modifier.padding(24.dp)) {
-            Text("Rep $repNum", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(if (isIsotonic) "Set $repNum" else "Rep $repNum", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
 
             if (rep.samples.isEmpty()) {
                 Box(modifier = Modifier.fillMaxWidth().height(150.dp), contentAlignment = Alignment.Center) {
@@ -280,6 +289,10 @@ fun IsoRepCard(repNum: Int, rep: IsoRepEntity, useLbs: Boolean) {
 
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 StatCol("Duration", "${String.format(java.util.Locale.US, "%.1f", rep.duration)}s")
+                // DYNAMIC ISO REP COLUMN
+                if (isIsotonic) {
+                    StatCol("Iso Reps", "${ceil(rep.duration / 3.0).toInt()}")
+                }
                 StatCol("Median", if (rep.samples.isEmpty()) "-" else formatWeightHistory(rep.median, useLbs))
             }
             Spacer(modifier = Modifier.height(12.dp))

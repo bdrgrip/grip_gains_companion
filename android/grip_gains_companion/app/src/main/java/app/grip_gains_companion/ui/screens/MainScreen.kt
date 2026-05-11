@@ -20,13 +20,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Smartphone
-import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -47,7 +44,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.grip_gains_companion.data.PreferencesRepository
 import app.grip_gains_companion.model.ConnectionState
 import app.grip_gains_companion.model.ForceDevice
-import app.grip_gains_companion.model.KinematicsSource
 import app.grip_gains_companion.service.ProgressorHandler
 import app.grip_gains_companion.service.ble.BluetoothManager
 import app.grip_gains_companion.service.web.WebViewBridge
@@ -55,6 +51,8 @@ import app.grip_gains_companion.ui.components.ForceGraph
 import app.grip_gains_companion.ui.components.TimerWebView
 import app.grip_gains_companion.ui.theme.GripGainsTheme
 import app.grip_gains_companion.util.StatisticsUtils
+import app.grip_gains_companion.util.ToneGenerator
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -65,28 +63,22 @@ fun MainScreen(
     progressorHandler: ProgressorHandler,
     webViewBridge: WebViewBridge,
     cachedWebView: android.webkit.WebView,
-    showStatusBar: Boolean,
     showForceGraph: Boolean,
     forceGraphWindow: Int,
     useLbs: Boolean,
     enableTargetWeight: Boolean,
-    useManualTarget: Boolean,
     manualTargetWeight: Double,
     weightTolerance: Double,
-    activeKinematicsSource: KinematicsSource,
     enableAnalytics: Boolean,
-    m5ConnectionState: ConnectionState,
-    m5Data: Triple<Float, Float, Float>,
+    isIsotonicSession: Boolean,
     deviceAliases: Map<String, String> = emptyMap(),
     onSettingsTap: () -> Unit,
     onHistoryTap: () -> Unit,
-    onUnitToggle: () -> Unit,
-    onSetManualWeightTap: () -> Unit,
-    enableIsotonicMode: Boolean,
-    onShowKinematicsSheet: () -> Unit
+    onSetManualWeightTap: () -> Unit
 ) {
     val context = LocalContext.current
     val isToolbarVisible by webViewBridge.isToolbarVisible.collectAsState()
+    val isLive by webViewBridge.buttonEnabled.collectAsState()
     val currentUrl by webViewBridge.currentUrl.collectAsState()
     val isBasicTimerPage = currentUrl.contains("basic-timer")
     val isRegularTimerPage = currentUrl.contains("/timer") && !isBasicTimerPage
@@ -95,14 +87,18 @@ fun MainScreen(
     val coroutineScope = rememberCoroutineScope()
     var canGoBack by remember { mutableStateOf(false) }
 
-    // --- BLUETOOTH NATIVE LAUNCHER (THE FIX) ---
+    // Isotonic Preferences
+    val flashOnEccentric by preferencesRepository.flashOnEccentric.collectAsStateWithLifecycle(initialValue = true)
+    val flashOnWait by preferencesRepository.flashOnWait.collectAsStateWithLifecycle(initialValue = true)
+    val beepOnEccentric by preferencesRepository.beepOnEccentric.collectAsStateWithLifecycle(initialValue = true)
+    val beepOnWait by preferencesRepository.beepOnWait.collectAsStateWithLifecycle(initialValue = true)
+
     val btManager = remember { context.getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager }
     val btAdapter = btManager?.adapter
     val enableBluetoothLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) {}
 
-    // --- BLUETOOTH & ALIAS STATES ---
     val connectionState by bluetoothManager.connectionState.collectAsState()
     val isConnected = connectionState == ConnectionState.Connected
     val isReconnecting = connectionState == ConnectionState.Reconnecting
@@ -111,9 +107,8 @@ fun MainScreen(
     val connectedName by bluetoothManager.connectedDeviceName.collectAsState()
     val discoveredDevices by bluetoothManager.discoveredDevices.collectAsStateWithLifecycle()
 
-    val deviceAliases by preferencesRepository.deviceAliases.collectAsStateWithLifecycle(initialValue = emptyMap())
+    val deviceAliasesState by preferencesRepository.deviceAliases.collectAsStateWithLifecycle(initialValue = emptyMap())
 
-    // Dialog States
     var showTensionSheet by remember { mutableStateOf(false) }
     var deviceToAlias by remember { mutableStateOf<ForceDevice?>(null) }
     var aliasInput by remember { mutableStateOf("") }
@@ -132,6 +127,57 @@ fun MainScreen(
         coroutineScope.launch {
             kotlinx.coroutines.delay(100)
             canGoBack = cachedWebView.canGoBack()
+        }
+    }
+
+    // --- NATIVE ISOTONIC TIMING LOOP (DRIFT-FREE) ---
+    var activeSeconds by remember { mutableIntStateOf(0) }
+    var flashColorBase by remember { mutableStateOf(Color.Transparent) }
+    val flashAlpha = remember { Animatable(0f) }
+
+    val primaryFlash = MaterialTheme.colorScheme.primaryContainer
+    val errorFlash = MaterialTheme.colorScheme.errorContainer
+
+    LaunchedEffect(isLive, isIsotonicSession) {
+        if (isLive && isIsotonicSession) {
+            activeSeconds = 1
+            var nextTickTime = System.currentTimeMillis()
+
+            while (true) {
+                val isTurnaround = (activeSeconds % 3 == 1)
+
+                if (isTurnaround) {
+                    if (beepOnEccentric) ToneGenerator.playHighTone()
+                    if (flashOnEccentric) {
+                        launch {
+                            flashColorBase = primaryFlash
+                            flashAlpha.snapTo(0.8f)
+                            flashAlpha.animateTo(0f, tween(800))
+                        }
+                    }
+                } else {
+                    if (beepOnWait) ToneGenerator.playLowTone()
+                    if (flashOnWait) {
+                        launch {
+                            flashColorBase = errorFlash
+                            flashAlpha.snapTo(0.6f)
+                            flashAlpha.animateTo(0f, tween(800))
+                        }
+                    }
+                }
+
+                nextTickTime += 1000L
+                val delayTime = nextTickTime - System.currentTimeMillis()
+                if (delayTime > 0) {
+                    delay(delayTime)
+                } else {
+                    nextTickTime = System.currentTimeMillis()
+                }
+                activeSeconds++
+            }
+        } else {
+            activeSeconds = 0
+            flashAlpha.snapTo(0f)
         }
     }
 
@@ -247,6 +293,10 @@ fun MainScreen(
                 shadowElevation = 16.dp
             ) {
                 Box(modifier = Modifier.fillMaxWidth().height(with(density) { level3Px.toDp() })) {
+
+                    // --- FULL-SHEET FLASH OVERLAY ---
+                    Box(modifier = Modifier.fillMaxSize().background(flashColorBase.copy(alpha = flashAlpha.value)))
+
                     Column(
                         modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp).padding(top = 8.dp)
                     ) {
@@ -291,19 +341,17 @@ fun MainScreen(
                             }
                         }
 
+                        // --- TOP ROW ---
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-
-                                val displayName = deviceAliases[connectedAddress] ?: connectedName ?: "No Scale"
-
+                            // LEFT GROUP: Bluetooth Scale + Metronome
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                val displayName = deviceAliasesState[connectedAddress] ?: connectedName ?: "No Scale"
                                 AssistChip(
                                     onClick = {
                                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        // THE BLUETOOTH FIX: Prompt for BT natively!
                                         if (btAdapter?.isEnabled == true) {
                                             bluetoothManager.startScanning()
                                             showTensionSheet = true
@@ -311,7 +359,14 @@ fun MainScreen(
                                             enableBluetoothLauncher.launch(Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE))
                                         }
                                     },
-                                    label = { Text(if (isConnected) displayName else "No Scale", fontWeight = FontWeight.Bold) },
+                                    label = {
+                                        Text(
+                                            text = if (isConnected) displayName else "No Scale",
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                        )
+                                    },
                                     leadingIcon = { Icon(Icons.Default.Bluetooth, null, modifier = Modifier.size(16.dp)) },
                                     colors = AssistChipDefaults.assistChipColors(
                                         containerColor = if (isConnected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
@@ -321,39 +376,40 @@ fun MainScreen(
                                     border = null
                                 )
 
-                                if (enableIsotonicMode) {
-                                    val m5Label = if (activeKinematicsSource == KinematicsSource.PHONE) "Phone"
-                                    else if (m5ConnectionState == ConnectionState.Connected) "M5Stick"
-                                    else "Scanning..."
+                                // CENTER: Isotonic Metronome Widget (Wraps content next to BT Chip)
+                                AnimatedVisibility(visible = isIsotonicSession && isLive) {
+                                    val isEccentric = (activeSeconds % 3 == 1)
+                                    val displayStr = when (activeSeconds % 3) {
+                                        1 -> "Go!"
+                                        2 -> "2"
+                                        0 -> "1"
+                                        else -> ""
+                                    }
 
-                                    val m5Icon = if (activeKinematicsSource == KinematicsSource.PHONE) Icons.Default.Smartphone
-                                    else if (m5ConnectionState == ConnectionState.Connected) Icons.Default.Watch
-                                    else Icons.AutoMirrored.Filled.BluetoothSearching
-
-                                    AssistChip(
-                                        onClick = {
-                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                            // THE BLUETOOTH FIX: Prompt for BT natively!
-                                            if (btAdapter?.isEnabled == true) {
-                                                onShowKinematicsSheet() // Still triggers scan in MainActivity
-                                                showTensionSheet = false // Hide other sheet if open
-                                            } else {
-                                                enableBluetoothLauncher.launch(Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE))
-                                            }
-                                        },
-                                        label = { Text(m5Label, fontWeight = FontWeight.Bold) },
-                                        leadingIcon = { Icon(m5Icon, null, modifier = Modifier.size(16.dp)) },
-                                        colors = AssistChipDefaults.assistChipColors(
-                                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                            labelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                                            leadingIconContentColor = MaterialTheme.colorScheme.secondary
+                                    Card(
+                                        modifier = Modifier.height(32.dp).padding(start = 8.dp),
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = if (isEccentric) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.errorContainer
                                         ),
-                                        border = null
-                                    )
+                                        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                                    ) {
+                                        Box(Modifier.fillMaxHeight().padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
+                                            Text(
+                                                text = displayStr,
+                                                fontSize = 16.sp,
+                                                fontWeight = FontWeight.Black,
+                                                color = if (isEccentric) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onErrorContainer
+                                            )
+                                        }
+                                    }
                                 }
                             }
 
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            // Spacer absorbs all remaining room, forcing the next Row to the far right
+                            Spacer(modifier = Modifier.weight(1f))
+
+                            // RIGHT GROUP: Manual Target & Settings
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.End) {
                                 AnimatedVisibility(visible = isBasicTimerPage || isRegularTimerPage) {
                                     TextButton(onClick = {
                                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -525,7 +581,7 @@ fun MainScreen(
                                         ) {
                                             @SuppressLint("MissingPermission")
                                             val defaultName = device.name ?: "Unknown Device"
-                                            val displayName = deviceAliases[device.address] ?: defaultName
+                                            val displayName = deviceAliasesState[device.address] ?: defaultName
 
                                             ListItem(
                                                 headlineContent = { Text(displayName, fontWeight = FontWeight.Bold) },
@@ -534,7 +590,7 @@ fun MainScreen(
                                                 trailingContent = {
                                                     IconButton(
                                                         onClick = {
-                                                            aliasInput = if (deviceAliases.containsKey(device.address)) displayName else ""
+                                                            aliasInput = if (deviceAliasesState.containsKey(device.address)) displayName else ""
                                                             deviceToAlias = device
                                                             showTensionSheet = false
                                                         }
@@ -577,7 +633,7 @@ fun MainScreen(
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
-                            if (deviceAliases.containsKey(deviceToAlias?.address)) {
+                            if (deviceAliasesState.containsKey(deviceToAlias?.address)) {
                                 TextButton(
                                     onClick = {
                                         coroutineScope.launch { preferencesRepository.setDeviceAlias(deviceToAlias!!.address, "") }

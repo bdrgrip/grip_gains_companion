@@ -14,7 +14,8 @@ data class IsoSessionEntity(
     val scrapedGripper: String? = null,
     val scrapedSide: String? = null,
     val side: String,
-    val isDeleted: Boolean = false
+    val isDeleted: Boolean = false,
+    val isIsotonic: Boolean = false
 )
 
 @Entity(

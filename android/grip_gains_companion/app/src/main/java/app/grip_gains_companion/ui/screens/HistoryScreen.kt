@@ -1,6 +1,8 @@
 package app.grip_gains_companion.ui.screens
 
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
@@ -36,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
@@ -47,11 +50,12 @@ import androidx.compose.ui.unit.dp
 import app.grip_gains_companion.database.RawSessionEntity
 import app.grip_gains_companion.database.SessionRepository
 import app.grip_gains_companion.database.SessionType
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
 
-enum class HistoryFilter { ALL, RAW, ISOMETRIC }
+enum class HistoryFilter { ALL, ISOTONIC, ISOMETRIC }
 enum class SideFilter { ALL, LEFT, BILATERAL, RIGHT }
 enum class SortOrder { NEWEST, OLDEST }
 
@@ -128,12 +132,17 @@ fun HistoryScreen(
 
     val filteredItems = remember(rawSessions, isoSessions, selectedMuscleFilter, selectedSideFilter, selectedTypeFilter, searchQuery, sortOrder, dateRange) {
         val mappedRaw = rawSessions.map { HistoryItem("RAW_${it.id}", it.timestamp, SessionType.ISOTONIC, it.targetMuscle, it.bodySide, it.workoutScore) }
-        val mappedIso = isoSessions.map { HistoryItem("ISO_${it.id}", it.timestamp, SessionType.ISOMETRIC, it.gripperType, it.side, 0.0) }
+
+        // --- ISOTONIC FIX ---
+        val mappedIso = isoSessions.map {
+            val sessionType = if (it.isIsotonic) SessionType.ISOTONIC else SessionType.ISOMETRIC
+            HistoryItem("ISO_${it.id}", it.timestamp, sessionType, it.gripperType, it.side, 0.0)
+        }
 
         val items = (mappedRaw + mappedIso).filter { item ->
             val typeMatch = when (selectedTypeFilter) {
                 HistoryFilter.ALL -> true
-                HistoryFilter.RAW -> item.type == SessionType.ISOTONIC
+                HistoryFilter.ISOTONIC -> item.type == SessionType.ISOTONIC
                 HistoryFilter.ISOMETRIC -> item.type == SessionType.ISOMETRIC
             }
             val sideMatch = when (selectedSideFilter) {
@@ -144,7 +153,7 @@ fun HistoryScreen(
             val searchMatch = item.label.contains(searchQuery, ignoreCase = true)
 
             val timeMatch = if (dateRange != null) {
-                item.timestamp in dateRange!!.first..(dateRange!!.second + 86400000L) // Add 24 hours to include the end day
+                item.timestamp in dateRange!!.first..(dateRange!!.second + 86400000L)
             } else true
 
             typeMatch && sideMatch && muscleMatch && searchMatch && timeMatch
@@ -155,8 +164,33 @@ fun HistoryScreen(
 
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
 
+    // --- PREDICTIVE BACK & SELECTION HANDLERS ---
+    var backProgress by remember { mutableFloatStateOf(0f) }
+
+    BackHandler(enabled = isSelectionMode) {
+        selectedSessionIds.clear()
+    }
+
+    PredictiveBackHandler(enabled = !isSelectionMode) { progress ->
+        try {
+            progress.collect { backEvent ->
+                backProgress = backEvent.progress
+            }
+            onBack()
+        } catch (e: CancellationException) {
+            backProgress = 0f
+        }
+    }
+
     Scaffold(
-        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+        modifier = Modifier
+            .nestedScroll(scrollBehavior.nestedScrollConnection)
+            .graphicsLayer {
+                scaleX = 1f - (backProgress * 0.1f)
+                scaleY = 1f - (backProgress * 0.1f)
+                translationY = backProgress * (size.height * 0.3f)
+                alpha = 1f - (backProgress * 0.5f)
+            },
         topBar = {
             LargeTopAppBar(
                 title = {
@@ -201,7 +235,6 @@ fun HistoryScreen(
             contentPadding = PaddingValues(bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // --- SEARCH BAR WITH INLINE AUTOCOMPLETE ---
             item {
                 Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                     Column(modifier = Modifier.fillMaxWidth()) {
@@ -265,7 +298,6 @@ fun HistoryScreen(
                 }
             }
 
-            // --- CONSOLIDATED STICKY FILTERS ---
             stickyHeader {
                 Surface(
                     color = MaterialTheme.colorScheme.background.copy(alpha = 0.95f),
@@ -278,7 +310,6 @@ fun HistoryScreen(
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // 1. Sort Order
                         ElevatedFilterChip(
                             selected = sortOrder == SortOrder.OLDEST,
                             onClick = { sortOrder = if (sortOrder == SortOrder.NEWEST) SortOrder.OLDEST else SortOrder.NEWEST },
@@ -286,7 +317,6 @@ fun HistoryScreen(
                             leadingIcon = { Icon(if (sortOrder == SortOrder.NEWEST) Icons.Default.ArrowDownward else Icons.Default.ArrowUpward, contentDescription = null, modifier = Modifier.size(16.dp)) }
                         )
 
-                        // 2. Date Range
                         val shortDateFmt = remember { SimpleDateFormat("MMM d", Locale.getDefault()) }
                         ElevatedFilterChip(
                             selected = dateRange != null,
@@ -313,10 +343,9 @@ fun HistoryScreen(
                             }
                         )
 
-                        // 3. Type Filter
                         Box {
                             val isActive = selectedTypeFilter != HistoryFilter.ALL
-                            val typeName = if (selectedTypeFilter == HistoryFilter.RAW) "RAW" else "Isometric"
+                            val typeName = if (selectedTypeFilter == HistoryFilter.ISOTONIC) "Isotonic" else "Isometric"
                             ElevatedFilterChip(
                                 selected = isActive,
                                 onClick = { showTypeDropdown = true },
@@ -330,12 +359,11 @@ fun HistoryScreen(
                                 }
                             )
                             DropdownMenu(expanded = showTypeDropdown, onDismissRequest = { showTypeDropdown = false }) {
-                                DropdownMenuItem(text = { Text("RAW") }, onClick = { selectedTypeFilter = HistoryFilter.RAW; showTypeDropdown = false })
+                                DropdownMenuItem(text = { Text("Isotonic") }, onClick = { selectedTypeFilter = HistoryFilter.ISOTONIC; showTypeDropdown = false })
                                 DropdownMenuItem(text = { Text("Isometric") }, onClick = { selectedTypeFilter = HistoryFilter.ISOMETRIC; showTypeDropdown = false })
                             }
                         }
 
-                        // 4. Side Filter
                         Box {
                             val isActive = selectedSideFilter != SideFilter.ALL
                             val sideName = selectedSideFilter.name.lowercase().replaceFirstChar { it.uppercase() }
@@ -361,7 +389,6 @@ fun HistoryScreen(
                 }
             }
 
-            // --- SCORE GRAPH HERO CARD ---
             item {
                 val graphData = filteredItems.filter { it.type == SessionType.ISOTONIC }
                 val showGraph = selectedMuscleFilter != null && graphData.isNotEmpty()
@@ -424,7 +451,6 @@ fun HistoryScreen(
                 }
             }
 
-            // --- LIST ITEMS ---
             items(filteredItems, key = { it.id }) { item ->
                 val isSelected = selectedSessionIds.contains(item.id)
 
@@ -451,8 +477,6 @@ fun HistoryScreen(
             }
         }
 
-        // --- DIALOGS ---
-
         if (showDeleteConfirmDialog) {
             AlertDialog(
                 onDismissRequest = { showDeleteConfirmDialog = false },
@@ -465,11 +489,9 @@ fun HistoryScreen(
                                 selectedSessionIds.forEach { id ->
                                     if (id.startsWith("RAW_")) {
                                         val rawId = id.removePrefix("RAW_").toLongOrNull()
-                                        // Update this method call if your Repository uses a different name
                                         rawId?.let { sessionRepository.deleteRawSessionById(it) }
                                     } else if (id.startsWith("ISO_")) {
                                         val isoId = id.removePrefix("ISO_")
-                                        // Update this method call if your Repository uses a different name
                                         sessionRepository.deleteIsoSessionById(isoId)
                                     }
                                 }
@@ -595,7 +617,7 @@ fun HistoryCard(
     modifier: Modifier = Modifier
 ) {
     val formatter = remember { SimpleDateFormat("MMM dd, yyyy • h:mm a", Locale.getDefault()) }
-    val isRaw = item.type == SessionType.ISOTONIC
+    val isIsotonic = item.type == SessionType.ISOTONIC
     val sideShort = item.side.take(1).uppercase()
 
     Card(
@@ -623,8 +645,8 @@ fun HistoryCard(
                 Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = RoundedCornerShape(12.dp)) {
                     Text(text = sideShort, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), color = MaterialTheme.colorScheme.onSecondaryContainer)
                 }
-                Surface(color = if (isRaw) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.tertiaryContainer, shape = RoundedCornerShape(12.dp)) {
-                    Text(text = if (isRaw) "RAW" else "Isometric", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), color = if (isRaw) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onTertiaryContainer)
+                Surface(color = if (isIsotonic) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.tertiaryContainer, shape = RoundedCornerShape(12.dp)) {
+                    Text(text = if (isIsotonic) "Isotonic" else "Isometric", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), color = if (isIsotonic) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onTertiaryContainer)
                 }
             }
         }

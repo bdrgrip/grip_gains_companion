@@ -1,10 +1,10 @@
 package app.grip_gains_companion.ui.screens
 
 import android.annotation.SuppressLint
-import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager as AndroidBluetoothManager
 import android.content.Context
 import android.content.Intent
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -13,8 +13,6 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -29,8 +27,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
@@ -42,9 +40,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.grip_gains_companion.data.PreferencesRepository
 import app.grip_gains_companion.model.ConnectionState
 import app.grip_gains_companion.model.ForceDevice
-import app.grip_gains_companion.model.KinematicsSource
 import app.grip_gains_companion.service.ble.BluetoothManager
 import app.grip_gains_companion.service.web.WebViewBridge
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 import app.grip_gains_companion.ui.components.DataSourceCard
@@ -55,11 +53,7 @@ fun SettingsScreen(
     preferencesRepository: PreferencesRepository,
     bluetoothManager: BluetoothManager,
     webViewBridge: WebViewBridge,
-    activeKinematicsSource: KinematicsSource,
     currentManualWeight: Double,
-    m5ConnectionState: ConnectionState,
-    m5Data: Triple<Float, Float, Float>,
-    onKinematicsChange: (KinematicsSource) -> Unit,
     onWeightChange: (Double) -> Unit,
     onDismiss: () -> Unit,
     onDisconnect: () -> Unit,
@@ -92,6 +86,10 @@ fun SettingsScreen(
     val backgroundTimeSync by preferencesRepository.backgroundTimeSync.collectAsStateWithLifecycle(initialValue = true)
 
     val enableIsotonicMode by preferencesRepository.enableIsotonicMode.collectAsStateWithLifecycle(initialValue = false)
+    val flashOnEccentric by preferencesRepository.flashOnEccentric.collectAsStateWithLifecycle(initialValue = true)
+    val flashOnWait by preferencesRepository.flashOnWait.collectAsStateWithLifecycle(initialValue = true)
+    val beepOnEccentric by preferencesRepository.beepOnEccentric.collectAsStateWithLifecycle(initialValue = true)
+    val beepOnWait by preferencesRepository.beepOnWait.collectAsStateWithLifecycle(initialValue = true)
 
     val autoFailRep by preferencesRepository.autoFailRep.collectAsStateWithLifecycle(initialValue = false)
     val failThreshold by preferencesRepository.failThreshold.collectAsStateWithLifecycle(initialValue = 0.50)
@@ -107,7 +105,6 @@ fun SettingsScreen(
     val showRawSummary by preferencesRepository.showRawSummary.collectAsStateWithLifecycle(initialValue = true)
 
     var showTensionSheet by remember { mutableStateOf(false) }
-    var showKinematicsSheet by remember { mutableStateOf(false) }
     var showResetConfirmation by remember { mutableStateOf(false) }
 
     var weightInput by remember {
@@ -122,8 +119,29 @@ fun SettingsScreen(
 
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
 
+    // --- PREDICTIVE BACK ANIMATION ---
+    var backProgress by remember { mutableFloatStateOf(0f) }
+
+    PredictiveBackHandler { progress ->
+        try {
+            progress.collect { backEvent ->
+                backProgress = backEvent.progress
+            }
+            onDismiss()
+        } catch (e: CancellationException) {
+            backProgress = 0f
+        }
+    }
+
     Scaffold(
-        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+        modifier = Modifier
+            .nestedScroll(scrollBehavior.nestedScrollConnection)
+            .graphicsLayer {
+                scaleX = 1f - (backProgress * 0.1f)
+                scaleY = 1f - (backProgress * 0.1f)
+                translationY = backProgress * (size.height * 0.3f)
+                alpha = 1f - (backProgress * 0.5f)
+            },
         topBar = {
             LargeTopAppBar(
                 title = { Text("Settings", fontWeight = FontWeight.Bold) },
@@ -157,12 +175,12 @@ fun SettingsScreen(
                         activeSource = if (connectionState == ConnectionState.Connected) connectedDeviceName ?: "Bluetooth Scale" else "[No Device]",
                         statusColor = if (connectionState == ConnectionState.Connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
                         onClick = {
-                            val isBtOn = (context.getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager).adapter?.isEnabled == true
+                            val isBtOn = btAdapter?.isEnabled == true
                             if (isBtOn) {
                                 bluetoothManager.startScanning()
                                 showTensionSheet = true
                             } else {
-                                enableBluetoothLauncher.launch(android.content.Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                                enableBluetoothLauncher.launch(Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE))
                             }
                         }
                     )
@@ -216,8 +234,8 @@ fun SettingsScreen(
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                             Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
-                                Text("Isotonic (RAW) Mode", style = MaterialTheme.typography.bodyLarge)
-                                Text("Treat Basic Timer as an Isotonic session with accelerometer data.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("Isotonic Mode", style = MaterialTheme.typography.bodyLarge)
+                                Text("Treat Basic Timer as an Isotonic session with a 3-second cadence and audio/visual metronomes.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Switch(
                                 checked = enableIsotonicMode,
@@ -228,26 +246,24 @@ fun SettingsScreen(
                         AnimatedVisibility(visible = enableIsotonicMode) {
                             Column {
                                 Spacer(modifier = Modifier.height(16.dp))
-                                DataSourceCard(
-                                    title = "Kinematics Data",
-                                    icon = Icons.Default.Speed,
-                                    activeSource = if (activeKinematicsSource == KinematicsSource.PHONE) "Phone Accelerometer" else "M5StickC Plus 2",
-                                    statusColor = if (activeKinematicsSource == KinematicsSource.PHONE) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else if (m5ConnectionState == ConnectionState.Connected) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.error
-                                    },
-                                    onClick = {
-                                        val isBtOn = (context.getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager).adapter?.isEnabled == true
-                                        if (isBtOn) {
-                                            showKinematicsSheet = true
-                                        } else {
-                                            enableBluetoothLauncher.launch(android.content.Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE))
-                                        }
-                                    }
-                                )
+                                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f), modifier = Modifier.padding(bottom = 8.dp))
+
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                                    Text("Flash on Eccentric")
+                                    Switch(checked = flashOnEccentric, onCheckedChange = { coroutineScope.launch { preferencesRepository.setFlashOnEccentric(it) } })
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                                    Text("Flash on Countdown")
+                                    Switch(checked = flashOnWait, onCheckedChange = { coroutineScope.launch { preferencesRepository.setFlashOnWait(it) } })
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                                    Text("Beep on Eccentric")
+                                    Switch(checked = beepOnEccentric, onCheckedChange = { coroutineScope.launch { preferencesRepository.setBeepOnEccentric(it) } })
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                                    Text("Beep on Countdown")
+                                    Switch(checked = beepOnWait, onCheckedChange = { coroutineScope.launch { preferencesRepository.setBeepOnWait(it) } })
+                                }
                             }
                         }
                     }
@@ -441,10 +457,6 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(48.dp))
         }
 
-        // ====================================================================
-        // --- SIBLING DIALOGS (UN-NESTED) ---
-        // ====================================================================
-
         if (showResetConfirmation) {
             AlertDialog(
                 onDismissRequest = { showResetConfirmation = false },
@@ -509,7 +521,7 @@ fun SettingsScreen(
                                                     onClick = {
                                                         aliasInput = if (deviceAliases.containsKey(device.address)) displayName else ""
                                                         deviceToAlias = device
-                                                        showTensionSheet = false // Hide underlying sheet so they don't overlap awkwardly
+                                                        showTensionSheet = false
                                                     }
                                                 ) {
                                                     Icon(Icons.Default.Edit, contentDescription = "Edit Name", modifier = Modifier.size(20.dp))
@@ -578,240 +590,5 @@ fun SettingsScreen(
                 }
             )
         }
-
-        if (showKinematicsSheet) {
-            AlertDialog(
-                onDismissRequest = { showKinematicsSheet = false },
-                shape = RoundedCornerShape(28.dp),
-                title = { Text("Select Kinematics Source", fontWeight = FontWeight.Bold) },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-
-                        // 1. Phone Accelerometer Card
-                        Surface(
-                            onClick = {
-                                onKinematicsChange(KinematicsSource.PHONE)
-                                showKinematicsSheet = false
-                            },
-                            shape = RoundedCornerShape(16.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            ListItem(
-                                headlineContent = { Text("Phone Accelerometer", fontWeight = FontWeight.Bold) },
-                                supportingContent = { Text("Uses internal gravity sensors.") },
-                                leadingContent = { Icon(Icons.Default.Smartphone, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-                            )
-                        }
-
-                        // 2. M5Stick Card with Live Status
-                        Surface(
-                            onClick = {
-                                onKinematicsChange(KinematicsSource.M5STICK)
-                            },
-                            shape = RoundedCornerShape(16.dp),
-                            color = if (activeKinematicsSource == KinematicsSource.M5STICK) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            ListItem(
-                                headlineContent = { Text("M5StickC Plus 2", fontWeight = FontWeight.Bold) },
-                                supportingContent = {
-                                    Column {
-                                        Text("External Bluetooth IMU.")
-                                        if (activeKinematicsSource == KinematicsSource.M5STICK) {
-                                            Spacer(modifier = Modifier.height(6.dp))
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(8.dp)
-                                                        .clip(RoundedCornerShape(50))
-                                                        .background(if (m5ConnectionState == ConnectionState.Connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
-                                                )
-                                                Spacer(modifier = Modifier.width(6.dp))
-                                                if (m5ConnectionState == ConnectionState.Connected) {
-                                                    Text(
-                                                        "Live: X: ${String.format(java.util.Locale.US, "%.1f", m5Data.first)} Y: ${String.format(java.util.Locale.US, "%.1f", m5Data.second)} Z: ${String.format(java.util.Locale.US, "%.1f", m5Data.third)}",
-                                                        style = MaterialTheme.typography.bodyMedium,
-                                                        fontWeight = FontWeight.Bold
-                                                    )
-                                                } else {
-                                                    Text("Disconnected / Scanning...", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
-                                                }
-                                            }
-                                        }
-                                    }
-                                },
-                                leadingContent = { Icon(Icons.Default.Watch, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) },
-                                colors = ListItemDefaults.colors(
-                                    containerColor = Color.Transparent,
-                                    headlineColor = if (activeKinematicsSource == KinematicsSource.M5STICK) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
-                                    supportingColor = if (activeKinematicsSource == KinematicsSource.M5STICK) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-                        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-
-                        OutlinedButton(
-                            onClick = {
-                                val clip = android.content.ClipData.newPlainText("M5 Firmware", M5_FIRMWARE_CODE)
-                                clipboardManager.setPrimaryClip(clip)
-                                android.widget.Toast.makeText(context, "Firmware copied to clipboard!", android.widget.Toast.LENGTH_SHORT).show()
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Copy Firmware (C++)")
-                        }
-                    }
-                },
-                confirmButton = {
-                    TextButton(onClick = { showKinematicsSheet = false }) { Text("Close") }
-                }
-            )
-        }
     }
 }
-
-private const val M5_FIRMWARE_CODE = """#include <M5Unified.h>
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
-#include <math.h>
-
-BLEServer* pServer = NULL;
-BLECharacteristic* pCharacteristic = NULL;
-bool deviceConnected = false;
-
-#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
-
-struct AccelData {
-  float x;
-  float y;
-  float z;
-};
-
-unsigned long lastUpdate = 0;
-const int updateInterval = 20; 
-const float dt = 0.02f;
-unsigned long lastBatteryUpdate = 0;
-
-float pitch = 0.0f;
-float roll = 0.0f;
-
-void updateScreenStatus() {
-  M5.Display.fillScreen(deviceConnected ? TFT_GREEN : TFT_RED);
-  M5.Display.setTextSize(2);
-  M5.Display.setTextColor(TFT_WHITE, deviceConnected ? TFT_GREEN : TFT_RED);
-  M5.Display.setCursor(10, 20);
-  M5.Display.println(deviceConnected ? "CONNECTED" : "PAIRING..");
-  
-  int bat = M5.Power.getBatteryLevel();
-  M5.Display.setTextSize(1.5);
-  M5.Display.setCursor(10, 80);
-  if (bat < 0) M5.Display.println("Bat: CHG");
-  else M5.Display.printf("Bat: %d%%", bat);
-  
-  M5.Display.setBrightness(deviceConnected ? 30 : 150);
-}
-
-class MyServerCallbacks: public BLEServerCallbacks {
-    void onConnect(BLEServer* pServer) {
-      deviceConnected = true;
-      updateScreenStatus();
-    }
-    void onDisconnect(BLEServer* pServer) {
-      deviceConnected = false;
-      updateScreenStatus();
-      pServer->startAdvertising(); 
-    }
-};
-
-void setup() {
-  auto cfg = M5.config();
-  M5.begin(cfg);
-  
-  M5.Display.fillScreen(TFT_BLUE);
-  M5.Display.setTextColor(TFT_WHITE, TFT_BLUE);
-  M5.Display.setTextSize(1.5);
-  M5.Display.setCursor(10, 40);
-  M5.Display.println("BOOTING BLE...");
-
-  BLEDevice::init("RAW_IMU");
-  pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());
-
-  BLEService *pService = pServer->createService(SERVICE_UUID);
-  pCharacteristic = pService->createCharacteristic(CHARACTERISTIC_UUID, BLECharacteristic::PROPERTY_NOTIFY);
-  pCharacteristic->addDescriptor(new BLE2902());
-  pService->start();
-
-  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-  pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->setScanResponse(true);
-  pAdvertising->setMinPreferred(0x0C); 
-  pAdvertising->setMaxPreferred(0x18); 
-  BLEDevice::startAdvertising();
-
-  updateScreenStatus();
-}
-
-void loop() {
-  M5.update();
-  unsigned long now = millis();
-  
-  if (now - lastUpdate >= updateInterval) {
-    lastUpdate = now;
-    
-    if (deviceConnected) {
-      float ax, ay, az;
-      float gx, gy, gz;
-      
-      M5.Imu.getAccel(&ax, &ay, &az);
-      M5.Imu.getGyro(&gx, &gy, &gz);
-      
-      float accelPitch = atan2(ay, az) * 180.0f / M_PI;
-      float accelRoll  = atan2(-ax, sqrt(ay * ay + az * az)) * 180.0f / M_PI;
-      
-      pitch = 0.98f * (pitch + gx * dt) + 0.02f * accelPitch;
-      roll  = 0.98f * (roll  + gy * dt) + 0.02f * accelRoll;
-      
-      float pitchRad = pitch * M_PI / 180.0f;
-      float rollRad  = roll  * M_PI / 180.0f;
-      
-      float gravX = -sin(rollRad);
-      float gravY = sin(pitchRad);
-      float gravZ = cos(pitchRad) * cos(rollRad);
-      
-      float finalX = (ax - gravX) * 9.80665f;
-      float finalY = (ay - gravY) * 9.80665f;
-      float finalZ = (az - gravZ) * 9.80665f;
-      
-      float noiseFloor = 0.6f;
-      if (abs(finalX) < noiseFloor) finalX = 0.0f;
-      if (abs(finalY) < noiseFloor) finalY = 0.0f;
-      if (abs(finalZ) < noiseFloor) finalZ = 0.0f;
-      
-      AccelData data;
-      data.x = finalX;
-      data.y = finalY;
-      data.z = finalZ;
-      
-      pCharacteristic->setValue((uint8_t*)&data, sizeof(AccelData));
-      pCharacteristic->notify();
-    }
-  }
-  
-  if (now - lastBatteryUpdate >= 5000) {
-    lastBatteryUpdate = now;
-    updateScreenStatus();
-  }
-}"""

@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.map
 import java.util.Locale
 
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
+
 /**
  * Repository for app preferences using DataStore
  */
@@ -72,19 +73,35 @@ class PreferencesRepository(private val context: Context) {
         val EARLY_FAIL_THRESHOLD_PERCENT = doublePreferencesKey("early_fail_threshold_percent")
 
         val LAST_CONNECTED_DEVICE_ADDRESS = stringPreferencesKey("last_connected_device_address")
+
         val ENABLE_ISOTONIC_MODE = booleanPreferencesKey("enable_isotonic_mode")
+        val FLASH_ON_ECCENTRIC = booleanPreferencesKey("flash_on_eccentric")
+        val FLASH_ON_WAIT = booleanPreferencesKey("flash_on_wait")
+        val BEEP_ON_ECCENTRIC = booleanPreferencesKey("beep_on_eccentric")
+        val BEEP_ON_WAIT = booleanPreferencesKey("beep_on_wait")
 
         val ENABLE_ANALYTICS = booleanPreferencesKey("enable_analytics")
         val SHOW_ISO_SUMMARY = booleanPreferencesKey("show_iso_summary")
         val SHOW_RAW_SUMMARY = booleanPreferencesKey("show_raw_summary")
 
         val DEVICE_ALIASES = stringPreferencesKey("device_aliases")
-
     }
 
-    // --- REQUESTED DEFAULT: ISOTONIC MODE OFF ---
+    // --- ISOTONIC PREFERENCES ---
     val enableIsotonicMode: Flow<Boolean> = context.dataStore.data.map { it[Keys.ENABLE_ISOTONIC_MODE] ?: false }
     suspend fun setEnableIsotonicMode(value: Boolean) = context.dataStore.edit { it[Keys.ENABLE_ISOTONIC_MODE] = value }
+
+    val flashOnEccentric: Flow<Boolean> = context.dataStore.data.map { it[Keys.FLASH_ON_ECCENTRIC] ?: true }
+    suspend fun setFlashOnEccentric(value: Boolean) = context.dataStore.edit { it[Keys.FLASH_ON_ECCENTRIC] = value }
+
+    val flashOnWait: Flow<Boolean> = context.dataStore.data.map { it[Keys.FLASH_ON_WAIT] ?: true }
+    suspend fun setFlashOnWait(value: Boolean) = context.dataStore.edit { it[Keys.FLASH_ON_WAIT] = value }
+
+    val beepOnEccentric: Flow<Boolean> = context.dataStore.data.map { it[Keys.BEEP_ON_ECCENTRIC] ?: true }
+    suspend fun setBeepOnEccentric(value: Boolean) = context.dataStore.edit { it[Keys.BEEP_ON_ECCENTRIC] = value }
+
+    val beepOnWait: Flow<Boolean> = context.dataStore.data.map { it[Keys.BEEP_ON_WAIT] ?: true }
+    suspend fun setBeepOnWait(value: Boolean) = context.dataStore.edit { it[Keys.BEEP_ON_WAIT] = value }
 
     // --- ANALYTICS PREFERENCES ---
     val enableAnalytics: Flow<Boolean> = context.dataStore.data.map {
